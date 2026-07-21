@@ -109,3 +109,15 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
 であり、基盤側の完成を待ってから3プロジェクトに着手するのではなく、
 実際に統合しながら並行して育て、エコシステム全体の完成度を高めていく
 方針とする。
+
+## 公開先・配布方針(2026-07-21、ユーザー確認済み、着手時に反映すること)
+
+- **公開パス**: `runo.tokyo/blog`(`RGit`の`runo.tokyo/rgit`・
+  `RS-Chiketto`の`runo.tokyo/chiketto`と同じパス方式、VPS上の
+  ポートは`8101`)。
+- **クロスプラットフォーム配布**: AlmaLinux・Ubuntu・Debian・Fedora・
+  RHEL等の主要Linuxディストリ、Windows・Windows Server向けに、
+  インストーラー付きのビルド済みバイナリをGitHub Releasesで配布する
+  (ユーザー指示、`RS-Chiketto`の
+  `.github/workflows/release.yml`・`install.sh`・`install.ps1`を
+  雛形として踏襲すること)。
