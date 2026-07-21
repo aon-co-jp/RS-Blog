@@ -43,6 +43,16 @@ VPS上の作業パス: `/root/RWordPress`(空フォルダ作成済み、2026-07-
   3プロジェクトで統一する。加えて**PostgreSQLとのDUAL DATABASE構成も
   可能にする**(ユーザー指示、2026-07-21追記)——`open-runo`/RPoemの
   「4層4重」DUAL DB思想と同じ方針、設定で切り替え可能にする。
+- **「分身の術」構成でDB層を共有する**(ユーザー指示、2026-07-21追記):
+  `open-web-server`・`aruaru-llm`・RPoem/RCosmoと同じ設計思想により、
+  `aruaru-db`/PostgreSQL接続は**1インスタンスを複数ドメインが共有**し、
+  ドメイン追加のたびに個別インストールは不要とする。実装は`aruaru-llm`
+  の`src/tenants.rs`(`TenantRegistry`)と同じパターン。**管理は
+  `open-easy-web`側から行う**(`appserver_registration.rs`に
+  `RWordPress`用の`AppServerKind`variantを追加する形)。
+  **非同期・マルチCPU/マルチコア/マルチスレッド対応**: `#[tokio::main]`
+  は既定の`multi_thread`フレーバー、CPU負荷の高い処理は`rayon`で
+  全論理コアへ並列ディスパッチする。
 - **PHPプラグイン互換性**: **既存のPHPプラグイン資産を実行できる
   互換レイヤも目指す**(機能相当の新規実装だけでは終わらせない、
   ユーザー指示)。難易度が非常に高いことは認識した上で、`open-easy-web`
