@@ -69,6 +69,47 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
     のみ、等)、(3) PHPプラグイン互換レイヤの技術調査(embed-PHP系
     クレートの調査等)、(4) `aruaru-db`との接続方式の設計。
 
+- **2026-07-21(続き) v0.1.0ブートストラップ完了: 投稿CRUD+OTP認証**
+  (`RS-Chiketto`のv0.1.0ブートストラップと全く同じパターンを踏襲):
+  1. `RS-Chiketto`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTP
+     ログイン機構、環境変数名のみ`RSBLOG_*`に変更)。v0.1.0時点では
+     管理者アカウント(`RSBLOG_ADMIN_EMAIL`)のみログイン可能(`RGit`/
+     `RS-Chiketto`にある登録アカウント制・アクセス制御の細分化は
+     まだ移植していない、次回以降の増分)。
+  2. 投稿(Post)のCRUD: `POST/GET /api/posts`・
+     `GET/PUT/DELETE /api/posts/:id`。ステータスは`draft`/`published`の
+     2値。永続化はJSONファイル(`RSBLOG_DATA_DIR/posts.json`、`aruaru-db`/
+     PostgreSQL DUAL DB構成への移行はまだ未着手——今回は動くMVPを優先)。
+     `RS-Chiketto`のチケットCRUDには無い`DELETE`ハンドラも追加した。
+  3. **検証**: `cargo build`は警告0件で成功(2m28s)。`cargo test`は
+     **11件全green**(`auth::tests`が6件、投稿CRUDのハンドラテストが
+     `poem::test::TestClient`を使って5件——未ログインでの`GET /api/posts`
+     が`401`になること、投稿の作成→一覧→取得→更新(ステータス変更)→
+     削除→削除後の`404`確認、空タイトルでの作成が`400`になること、を
+     それぞれ検証)。テストは`poem`の`test`featureを`dev-dependencies`に
+     追加して実現(`RS-Chiketto`側のCargo.tomlには無かった追加、
+     `poem::test`モジュールがデフォルトでは無効なため)。
+     **注意**: 実バイナリを起動してのcurlベースの実HTTPスモークテスト
+     (`RS-Chiketto`のHANDOFFにある「未ログインで401→OTPログイン→
+     作成201→一覧→更新」の一連)は今回**未実施**——`cargo test`内の
+     `TestClient`によるインメモリE2Eテストで代替した。実SMTP環境が
+     手元に無かったため、次回実機(VPS等)でのデプロイ時に必ず
+     curlでの実HTTPスモークテストを行うこと。
+  4. `install.sh`/`install.ps1`/`.github/workflows/release.yml`は
+     `RS-Chiketto`版をそのままリネーム移植(`chiketto`→`blog`、
+     `RSCHIKETTO`→`RSBLOG`、ポートは`8101`)。muslターゲット
+     (`x86_64-unknown-linux-musl`)による静的リンクLinuxバイナリ配布も
+     同じ方針。
+  5. `README.md`に「現状」セクションを追加(既存のマーケティング文・
+     開発開始日は変更せず)。
+  - **次にすべきこと**: (1) 実機(VPS)でのcurlベース実HTTPスモーク
+    テスト(OTPメール実送信含む)、(2) `RGit`にある登録アカウント制・
+    アクセス制御(閲覧/編集の個別許可)の移植、(3) 固定ページ・
+    カスタム投稿タイプ・テーマ・ウィジェット等の追加機能、
+    (4) PHPプラグイン互換レイヤの技術調査、(5) `aruaru-db`/PostgreSQL
+    DUAL DB構成への移行(現状はJSONファイル永続化)、(6) GitHubへの
+    初回push・VPSデプロイ(`runo.tokyo/blog`、ポート`8101`)。
+
 
 ## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
 
