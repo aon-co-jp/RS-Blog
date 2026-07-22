@@ -29,7 +29,7 @@ use poem::listener::TcpListener;
 use poem::middleware::Tracing;
 use poem::web::Data;
 use poem::{
-    get, handler, post,
+    delete, get, handler, post,
     web::Path as PathExtractor,
     EndpointExt, Request, Response, Result as PoemResult, Route, Server,
 };
@@ -65,6 +65,8 @@ struct Post {
     title: String,
     body: String,
     status: PostStatus,
+    #[serde(default)]
+    categories: Vec<u64>,
     created_at: u64,
     updated_at: u64,
 }
@@ -99,6 +101,8 @@ fn now_unix() -> u64 {
 struct CreatePostRequest {
     title: String,
     body: String,
+    #[serde(default)]
+    categories: Vec<u64>,
 }
 
 /// `POST /api/posts` — 投稿を新規作成する(ログイン必須、初期状態は`draft`)。
@@ -114,7 +118,15 @@ async fn create_post(req: &Request, state: Data<&AppState>, body: poem::web::Jso
     let id = store.next_id;
     store.next_id += 1;
     let now = now_unix();
-    let post = Post { id, title: body.title.clone(), body: body.body.clone(), status: PostStatus::Draft, created_at: now, updated_at: now };
+    let post = Post {
+        id,
+        title: body.title.clone(),
+        body: body.body.clone(),
+        status: PostStatus::Draft,
+        categories: body.categories.clone(),
+        created_at: now,
+        updated_at: now,
+    };
     store.posts.push(post.clone());
     save_posts(&state.data_root, &store)
         .await
@@ -132,10 +144,18 @@ async fn create_post(req: &Request, state: Data<&AppState>, body: poem::web::Jso
 async fn list_posts(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
     let store = load_posts(&state.data_root).await;
+    // シンプルなクエリパース(`?category=<id>`のみ対応)。
+    let category_filter: Option<u64> = req.uri().query().and_then(|q| {
+        q.split('&').find_map(|pair| pair.strip_prefix("category=").and_then(|v| v.parse::<u64>().ok()))
+    });
+    let posts: Vec<&Post> = match category_filter {
+        Some(cat_id) => store.posts.iter().filter(|p| p.categories.contains(&cat_id)).collect(),
+        None => store.posts.iter().collect(),
+    };
     Ok(Response::builder()
         .status(poem::http::StatusCode::OK)
         .content_type("application/json")
-        .body(serde_json::to_vec(&store.posts).unwrap_or_default()))
+        .body(serde_json::to_vec(&posts).unwrap_or_default()))
 }
 
 #[handler]
@@ -156,6 +176,7 @@ struct UpdatePostRequest {
     title: Option<String>,
     body: Option<String>,
     status: Option<PostStatus>,
+    categories: Option<Vec<u64>>,
 }
 
 /// `PUT /api/posts/:id` — 投稿のタイトル・本文・ステータスを更新する
@@ -181,6 +202,9 @@ async fn update_post(
     if let Some(status) = &body.status {
         post.status = status.clone();
     }
+    if let Some(categories) = &body.categories {
+        post.categories = categories.clone();
+    }
     post.updated_at = now_unix();
     let updated = post.clone();
     save_posts(&state.data_root, &store)
@@ -203,6 +227,236 @@ async fn delete_post(req: &Request, PathExtractor(id): PathExtractor<u64>, state
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("post not found"));
     }
     save_posts(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+// ---------------------------------------------------------------------
+// カテゴリ(Category) — 単純なCRUD、管理者のみ。投稿は`categories: Vec<u64>`
+// でカテゴリIDを参照する(多対多)。
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Category {
+    id: u64,
+    name: String,
+    slug: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CategoryStore {
+    next_id: u64,
+    categories: Vec<Category>,
+}
+
+fn categories_path(data_root: &std::path::Path) -> PathBuf {
+    data_root.join("categories.json")
+}
+
+async fn load_categories(data_root: &std::path::Path) -> CategoryStore {
+    match tokio::fs::read(categories_path(data_root)).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => CategoryStore::default(),
+    }
+}
+
+async fn save_categories(data_root: &std::path::Path, store: &CategoryStore) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(store).expect("CategoryStore serialization is infallible");
+    tokio::fs::write(categories_path(data_root), bytes).await
+}
+
+#[derive(Deserialize)]
+struct CreateCategoryRequest {
+    name: String,
+    slug: String,
+}
+
+/// `GET /api/categories` — カテゴリ一覧(管理者のみ)。
+#[handler]
+async fn list_categories(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let store = load_categories(&state.data_root).await;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&store.categories).unwrap_or_default()))
+}
+
+/// `POST /api/categories` — カテゴリを新規作成する(管理者のみ)。
+#[handler]
+async fn create_category(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateCategoryRequest>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    if body.name.trim().is_empty() || body.slug.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("name and slug must not be empty"));
+    }
+    let mut store = load_categories(&state.data_root).await;
+    let id = store.next_id;
+    store.next_id += 1;
+    let category = Category { id, name: body.name.clone(), slug: body.slug.clone() };
+    store.categories.push(category.clone());
+    save_categories(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&category).unwrap_or_default()))
+}
+
+/// `DELETE /api/categories/:id` — カテゴリを削除する(管理者のみ)。
+/// 既存投稿の`categories`参照は自動的には剥がさない(単純さ優先、
+/// 次の増分での改善候補)。
+#[handler]
+async fn delete_category(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = load_categories(&state.data_root).await;
+    let before = store.categories.len();
+    store.categories.retain(|c| c.id != id);
+    if store.categories.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("category not found"));
+    }
+    save_categories(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+// ---------------------------------------------------------------------
+// コメント(Comment) — 投稿への未ログイン投稿を許可するが、WordPressの
+// モデレーションキューと同じく初期状態は`approved: false`。
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Comment {
+    id: u64,
+    post_id: u64,
+    author_name: String,
+    body: String,
+    created_at: u64,
+    approved: bool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CommentStore {
+    next_id: u64,
+    comments: Vec<Comment>,
+}
+
+fn comments_path(data_root: &std::path::Path) -> PathBuf {
+    data_root.join("comments.json")
+}
+
+async fn load_comments(data_root: &std::path::Path) -> CommentStore {
+    match tokio::fs::read(comments_path(data_root)).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => CommentStore::default(),
+    }
+}
+
+async fn save_comments(data_root: &std::path::Path, store: &CommentStore) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(store).expect("CommentStore serialization is infallible");
+    tokio::fs::write(comments_path(data_root), bytes).await
+}
+
+#[derive(Deserialize)]
+struct CreateCommentRequest {
+    author_name: String,
+    body: String,
+}
+
+/// `POST /api/posts/:id/comments` — コメントを投稿する(未ログインで可、
+/// ただし常に`approved: false`で作成される——WordPressのモデレーション
+/// キューのデフォルト挙動と同じ)。対象の投稿が存在しない場合は404。
+#[handler]
+async fn create_comment(
+    PathExtractor(post_id): PathExtractor<u64>,
+    state: Data<&AppState>,
+    body: poem::web::Json<CreateCommentRequest>,
+) -> PoemResult<Response> {
+    if body.author_name.trim().is_empty() || body.body.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("author_name and body must not be empty"));
+    }
+    let posts = load_posts(&state.data_root).await;
+    if !posts.posts.iter().any(|p| p.id == post_id) {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("post not found"));
+    }
+    let mut store = load_comments(&state.data_root).await;
+    let id = store.next_id;
+    store.next_id += 1;
+    let comment = Comment {
+        id,
+        post_id,
+        author_name: body.author_name.clone(),
+        body: body.body.clone(),
+        created_at: now_unix(),
+        approved: false,
+    };
+    store.comments.push(comment.clone());
+    save_comments(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&comment).unwrap_or_default()))
+}
+
+/// `GET /api/posts/:id/comments?approved_only=true` — 指定投稿のコメント
+/// 一覧(公開、未ログインで可)。`approved_only=true`を付けない場合も
+/// 公開エンドポイントとしては承認済みのみ返す(未承認コメントの公開
+/// 閲覧は`GET /api/comments`(管理者専用)からのみ可能)。
+#[handler]
+async fn list_post_comments(PathExtractor(post_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    let store = load_comments(&state.data_root).await;
+    let comments: Vec<&Comment> = store.comments.iter().filter(|c| c.post_id == post_id && c.approved).collect();
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&comments).unwrap_or_default()))
+}
+
+/// `GET /api/comments` — 全コメント一覧(管理者のみ、未承認も含む)。
+#[handler]
+async fn list_all_comments(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let store = load_comments(&state.data_root).await;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&store.comments).unwrap_or_default()))
+}
+
+/// `POST /api/comments/:id/approve` — コメントを承認する(管理者のみ)。
+#[handler]
+async fn approve_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = load_comments(&state.data_root).await;
+    let Some(comment) = store.comments.iter_mut().find(|c| c.id == id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("comment not found"));
+    };
+    comment.approved = true;
+    let updated = comment.clone();
+    save_comments(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&updated).unwrap_or_default()))
+}
+
+/// `DELETE /api/comments/:id` — コメントを削除する(管理者のみ)。
+#[handler]
+async fn delete_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = load_comments(&state.data_root).await;
+    let before = store.comments.len();
+    store.comments.retain(|c| c.id != id);
+    if store.comments.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("comment not found"));
+    }
+    save_comments(&state.data_root, &store)
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
@@ -252,6 +506,14 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <tr><td><code>GET /api/posts/:id</code></td><td>投稿詳細取得</td></tr>
 <tr><td><code>PUT /api/posts/:id</code></td><td>投稿更新(ステータス変更含む、<code>draft</code>/<code>published</code>)</td></tr>
 <tr><td><code>DELETE /api/posts/:id</code></td><td>投稿削除</td></tr>
+<tr><td><code>GET /api/posts?category=:id</code></td><td>カテゴリIDで投稿を絞り込み一覧</td></tr>
+<tr><td><code>GET /api/categories</code> / <code>POST /api/categories</code></td><td>カテゴリ一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>DELETE /api/categories/:id</code></td><td>カテゴリ削除</td></tr>
+<tr><td><code>POST /api/posts/:id/comments</code></td><td>コメント投稿(未ログイン可、常に未承認状態で作成)</td></tr>
+<tr><td><code>GET /api/posts/:id/comments?approved_only=true</code></td><td>指定投稿の承認済みコメント一覧(公開)</td></tr>
+<tr><td><code>GET /api/comments</code></td><td>全コメント一覧(未承認含む、ログイン必須)</td></tr>
+<tr><td><code>POST /api/comments/:id/approve</code></td><td>コメントを承認</td></tr>
+<tr><td><code>DELETE /api/comments/:id</code></td><td>コメント削除</td></tr>
 </table>
 
 <div class="warn">
@@ -367,6 +629,12 @@ async fn main() -> anyhow::Result<()> {
         .at("/api/auth/logout", post(logout))
         .at("/api/posts", get(list_posts).post(create_post))
         .at("/api/posts/:id", get(get_post).put(update_post).delete(delete_post))
+        .at("/api/categories", get(list_categories).post(create_category))
+        .at("/api/categories/:id", delete(delete_category))
+        .at("/api/posts/:id/comments", get(list_post_comments).post(create_comment))
+        .at("/api/comments", get(list_all_comments))
+        .at("/api/comments/:id/approve", post(approve_comment))
+        .at("/api/comments/:id", delete(delete_comment))
         .data(state)
         .with(Tracing);
 
@@ -395,6 +663,12 @@ mod tests {
             .at("/api/auth/logout", post(logout))
             .at("/api/posts", get(list_posts).post(create_post))
             .at("/api/posts/:id", get(get_post).put(update_post).delete(delete_post))
+            .at("/api/categories", get(list_categories).post(create_category))
+            .at("/api/categories/:id", delete(delete_category))
+            .at("/api/posts/:id/comments", get(list_post_comments).post(create_comment))
+            .at("/api/comments", get(list_all_comments))
+            .at("/api/comments/:id/approve", post(approve_comment))
+            .at("/api/comments/:id", delete(delete_comment))
             .data(state)
     }
 
@@ -516,6 +790,107 @@ mod tests {
             .send()
             .await;
         resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn category_crud_and_post_filtering_by_category() {
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let token = admin_token(&state).await;
+        let client = TestClient::new(app_for(state));
+
+        let resp = client
+            .post("/api/categories")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"name": "News", "slug": "news"}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let category: Category = resp.json().await.value().deserialize();
+
+        let resp = client
+            .post("/api/posts")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "Categorized", "body": "...", "categories": [category.id]}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        let resp = client
+            .post("/api/posts")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "Uncategorized", "body": "..."}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        let resp = client
+            .get(format!("/api/posts?category={}", category.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+        let posts: Vec<Post> = resp.json().await.value().deserialize();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].title, "Categorized");
+
+        let resp = client
+            .delete(format!("/api/categories/{}", category.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+    }
+
+    #[tokio::test]
+    async fn comment_moderation_queue_hides_unapproved_until_admin_approves() {
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let token = admin_token(&state).await;
+        let client = TestClient::new(app_for(state));
+
+        let resp = client
+            .post("/api/posts")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "With comments", "body": "..."}))
+            .send()
+            .await;
+        let post: Post = resp.json().await.value().deserialize();
+
+        // 未ログインでコメント投稿できる(常にapproved: falseで作成される)。
+        let resp = client
+            .post(format!("/api/posts/{}/comments", post.id))
+            .body_json(&serde_json::json!({"author_name": "Alice", "body": "Nice post!"}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let comment: Comment = resp.json().await.value().deserialize();
+        assert!(!comment.approved);
+
+        // 承認前は公開一覧(approved_only)に出てこない。
+        let resp = client.get(format!("/api/posts/{}/comments?approved_only=true", post.id)).send().await;
+        resp.assert_status_is_ok();
+        let visible: Vec<Comment> = resp.json().await.value().deserialize();
+        assert!(visible.is_empty());
+
+        // 管理者は全件(未承認含む)を見られる。
+        let resp = client.get("/api/comments").header("Authorization", format!("Bearer {token}")).send().await;
+        resp.assert_status_is_ok();
+        let all: Vec<Comment> = resp.json().await.value().deserialize();
+        assert_eq!(all.len(), 1);
+
+        // 管理者が承認すると公開一覧に出るようになる。
+        let resp = client
+            .post(format!("/api/comments/{}/approve", comment.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+
+        let resp = client.get(format!("/api/posts/{}/comments?approved_only=true", post.id)).send().await;
+        resp.assert_status_is_ok();
+        let visible: Vec<Comment> = resp.json().await.value().deserialize();
+        assert_eq!(visible.len(), 1);
     }
 
     fn tempdir() -> TempDir {

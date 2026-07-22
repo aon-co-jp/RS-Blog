@@ -8,8 +8,8 @@
 
 ## 現状(v0.1.0)
 
-> ⚠️ **正直な開示**: v0.1.0時点では投稿(Post)のCRUD+OTPログイン(管理者のみ)
-> のみを実装している。WordPressが持つ以下の機能は**まだ一切無い**:
+> ⚠️ **正直な開示**: v0.1.0時点では投稿(Post)のCRUD+OTPログイン(管理者のみ)+
+> カテゴリ/コメント機能を実装している。WordPressが持つ以下の機能は**まだ一切無い**:
 >
 > - 固定ページ・カスタム投稿タイプ
 > - テーマ・ウィジェット
@@ -22,11 +22,18 @@
 
 - `GET /healthz` — ヘルスチェック
 - `POST /api/auth/request-otp` / `POST /api/auth/verify-otp` / `POST /api/auth/logout` — OTPメールログイン(管理者のみ、`RSBLOG_ADMIN_EMAIL`宛)
-- `POST /api/posts` / `GET /api/posts` — 投稿の作成・一覧(ログイン必須)
+- `POST /api/posts` / `GET /api/posts` — 投稿の作成・一覧(ログイン必須、`GET /api/posts?category=:id`でカテゴリ絞り込み可)
 - `GET /api/posts/:id` / `PUT /api/posts/:id` / `DELETE /api/posts/:id` — 投稿の取得・更新・削除(ログイン必須)
+- `GET /api/categories` / `POST /api/categories` — カテゴリの一覧・新規作成(ログイン必須)
+- `DELETE /api/categories/:id` — カテゴリ削除(ログイン必須)
+- `POST /api/posts/:id/comments` — コメント投稿(未ログイン可、WordPressのモデレーションキューと同じく常に未承認状態で作成)
+- `GET /api/posts/:id/comments?approved_only=true` — 指定投稿の承認済みコメント一覧(公開)
+- `GET /api/comments` — 全コメント一覧(未承認含む、ログイン必須)
+- `POST /api/comments/:id/approve` / `DELETE /api/comments/:id` — コメントの承認・削除(ログイン必須)
 
-投稿は`draft`(下書き)/`published`(公開)の2ステータス。永続化はJSONファイル
-(`RSBLOG_DATA_DIR/posts.json`)。詳細な設計方針・今後の予定は`CLAUDE.md`の
+投稿は`draft`(下書き)/`published`(公開)の2ステータスに加え、`categories: Vec<u64>`
+でカテゴリIDを複数参照可能。永続化はJSONファイル(`RSBLOG_DATA_DIR/posts.json`・
+`categories.json`・`comments.json`)。詳細な設計方針・今後の予定は`CLAUDE.md`の
 HANDOFFセクションを参照。
 
 ## インストール(ビルド済みバイナリ、インストーラー付き)
