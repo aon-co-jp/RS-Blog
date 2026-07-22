@@ -8,7 +8,7 @@
 //! **v0.1.0時点では、投稿(Post)のCRUDのみ実装している。**
 //! WordPressが持つ以下の機能は**まだ一切無い**:
 //!
-//! - 固定ページ・カスタム投稿タイプ
+//! - カスタム投稿タイプ
 //! - テーマ・ウィジェット
 //! - プラグイン機構(PHPプラグイン互換レイヤも未着手)
 //! - メディアライブラリ
@@ -67,6 +67,8 @@ struct Post {
     status: PostStatus,
     #[serde(default)]
     categories: Vec<u64>,
+    #[serde(default)]
+    tags: Vec<u64>,
     created_at: u64,
     updated_at: u64,
 }
@@ -103,6 +105,8 @@ struct CreatePostRequest {
     body: String,
     #[serde(default)]
     categories: Vec<u64>,
+    #[serde(default)]
+    tags: Vec<u64>,
 }
 
 /// `POST /api/posts` — 投稿を新規作成する(ログイン必須、初期状態は`draft`)。
@@ -124,6 +128,7 @@ async fn create_post(req: &Request, state: Data<&AppState>, body: poem::web::Jso
         body: body.body.clone(),
         status: PostStatus::Draft,
         categories: body.categories.clone(),
+        tags: body.tags.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -144,14 +149,19 @@ async fn create_post(req: &Request, state: Data<&AppState>, body: poem::web::Jso
 async fn list_posts(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
     let store = load_posts(&state.data_root).await;
-    // シンプルなクエリパース(`?category=<id>`のみ対応)。
+    // シンプルなクエリパース(`?category=<id>`・`?tag=<id>`に対応)。
     let category_filter: Option<u64> = req.uri().query().and_then(|q| {
         q.split('&').find_map(|pair| pair.strip_prefix("category=").and_then(|v| v.parse::<u64>().ok()))
     });
-    let posts: Vec<&Post> = match category_filter {
-        Some(cat_id) => store.posts.iter().filter(|p| p.categories.contains(&cat_id)).collect(),
-        None => store.posts.iter().collect(),
-    };
+    let tag_filter: Option<u64> = req.uri().query().and_then(|q| {
+        q.split('&').find_map(|pair| pair.strip_prefix("tag=").and_then(|v| v.parse::<u64>().ok()))
+    });
+    let posts: Vec<&Post> = store
+        .posts
+        .iter()
+        .filter(|p| category_filter.map(|cat_id| p.categories.contains(&cat_id)).unwrap_or(true))
+        .filter(|p| tag_filter.map(|tag_id| p.tags.contains(&tag_id)).unwrap_or(true))
+        .collect();
     Ok(Response::builder()
         .status(poem::http::StatusCode::OK)
         .content_type("application/json")
@@ -177,6 +187,7 @@ struct UpdatePostRequest {
     body: Option<String>,
     status: Option<PostStatus>,
     categories: Option<Vec<u64>>,
+    tags: Option<Vec<u64>>,
 }
 
 /// `PUT /api/posts/:id` — 投稿のタイトル・本文・ステータスを更新する
@@ -204,6 +215,9 @@ async fn update_post(
     }
     if let Some(categories) = &body.categories {
         post.categories = categories.clone();
+    }
+    if let Some(tags) = &body.tags {
+        post.tags = tags.clone();
     }
     post.updated_at = now_unix();
     let updated = post.clone();
@@ -317,6 +331,288 @@ async fn delete_category(req: &Request, PathExtractor(id): PathExtractor<u64>, s
         return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("category not found"));
     }
     save_categories(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+// ---------------------------------------------------------------------
+// 固定ページ(Page) — WordPressの「固定ページ」相当。投稿(Post)とは
+// 別枠で、時系列のブログフィードには含まれない独立コンテンツ
+// (「About」「Contact」等)。カテゴリは持たない。`slug`は一意。
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum PageStatus {
+    Draft,
+    Published,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Page {
+    id: u64,
+    title: String,
+    slug: String,
+    body: String,
+    status: PageStatus,
+    created_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PageStore {
+    next_id: u64,
+    pages: Vec<Page>,
+}
+
+fn pages_path(data_root: &std::path::Path) -> PathBuf {
+    data_root.join("pages.json")
+}
+
+async fn load_pages(data_root: &std::path::Path) -> PageStore {
+    match tokio::fs::read(pages_path(data_root)).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => PageStore::default(),
+    }
+}
+
+async fn save_pages(data_root: &std::path::Path, store: &PageStore) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(store).expect("PageStore serialization is infallible");
+    tokio::fs::write(pages_path(data_root), bytes).await
+}
+
+#[derive(Deserialize)]
+struct CreatePageRequest {
+    title: String,
+    slug: String,
+    body: String,
+}
+
+/// `POST /api/pages` — 固定ページを新規作成する(管理者のみ、
+/// 初期状態は`draft`)。`slug`は既存ページと重複してはならない。
+#[handler]
+async fn create_page(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreatePageRequest>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    if body.title.trim().is_empty() || body.slug.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("title and slug must not be empty"));
+    }
+    let mut store = load_pages(&state.data_root).await;
+    if store.pages.iter().any(|p| p.slug == body.slug) {
+        return Ok(Response::builder().status(poem::http::StatusCode::CONFLICT).body("slug already in use"));
+    }
+    let id = store.next_id;
+    store.next_id += 1;
+    let now = now_unix();
+    let page = Page {
+        id,
+        title: body.title.clone(),
+        slug: body.slug.clone(),
+        body: body.body.clone(),
+        status: PageStatus::Draft,
+        created_at: now,
+        updated_at: now,
+    };
+    store.pages.push(page.clone());
+    save_pages(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&page).unwrap_or_default()))
+}
+
+/// `GET /api/pages` — 固定ページ一覧(管理者のみ)。
+#[handler]
+async fn list_pages(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let store = load_pages(&state.data_root).await;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&store.pages).unwrap_or_default()))
+}
+
+#[handler]
+async fn get_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let store = load_pages(&state.data_root).await;
+    match store.pages.iter().find(|p| p.id == id) {
+        Some(page) => Ok(Response::builder()
+            .status(poem::http::StatusCode::OK)
+            .content_type("application/json")
+            .body(serde_json::to_vec(page).unwrap_or_default())),
+        None => Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("page not found")),
+    }
+}
+
+/// `GET /api/pages/by-slug/:slug` — スラッグでの公開固定ページ取得
+/// (未ログインで可、`published`状態のもののみ返す——実サイトで
+/// URLスラッグから固定ページを描画する際のルックアップ相当)。
+#[handler]
+async fn get_page_by_slug(PathExtractor(slug): PathExtractor<String>, state: Data<&AppState>) -> PoemResult<Response> {
+    let store = load_pages(&state.data_root).await;
+    match store.pages.iter().find(|p| p.slug == slug && p.status == PageStatus::Published) {
+        Some(page) => Ok(Response::builder()
+            .status(poem::http::StatusCode::OK)
+            .content_type("application/json")
+            .body(serde_json::to_vec(page).unwrap_or_default())),
+        None => Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("page not found")),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdatePageRequest {
+    title: Option<String>,
+    slug: Option<String>,
+    body: Option<String>,
+    status: Option<PageStatus>,
+}
+
+/// `PUT /api/pages/:id` — 固定ページを更新する(管理者のみ、指定した
+/// フィールドのみ更新)。`slug`変更時も一意性を検証する。
+#[handler]
+async fn update_page(
+    req: &Request,
+    PathExtractor(id): PathExtractor<u64>,
+    state: Data<&AppState>,
+    body: poem::web::Json<UpdatePageRequest>,
+) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = load_pages(&state.data_root).await;
+    if let Some(slug) = &body.slug {
+        if store.pages.iter().any(|p| p.id != id && &p.slug == slug) {
+            return Ok(Response::builder().status(poem::http::StatusCode::CONFLICT).body("slug already in use"));
+        }
+    }
+    let Some(page) = store.pages.iter_mut().find(|p| p.id == id) else {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("page not found"));
+    };
+    if let Some(title) = &body.title {
+        page.title = title.clone();
+    }
+    if let Some(slug) = &body.slug {
+        page.slug = slug.clone();
+    }
+    if let Some(page_body) = &body.body {
+        page.body = page_body.clone();
+    }
+    if let Some(status) = &body.status {
+        page.status = status.clone();
+    }
+    page.updated_at = now_unix();
+    let updated = page.clone();
+    save_pages(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&updated).unwrap_or_default()))
+}
+
+/// `DELETE /api/pages/:id` — 固定ページを削除する(管理者のみ)。
+#[handler]
+async fn delete_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = load_pages(&state.data_root).await;
+    let before = store.pages.len();
+    store.pages.retain(|p| p.id != id);
+    if store.pages.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("page not found"));
+    }
+    save_pages(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
+}
+
+// ---------------------------------------------------------------------
+// タグ(Tag) — カテゴリ(Category、階層構造)とは別の、フラットな
+// タグ付け機構。単純なCRUD、管理者のみ。投稿は`tags: Vec<u64>`で
+// タグIDを参照する(多対多)。
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Tag {
+    id: u64,
+    name: String,
+    slug: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TagStore {
+    next_id: u64,
+    tags: Vec<Tag>,
+}
+
+fn tags_path(data_root: &std::path::Path) -> PathBuf {
+    data_root.join("tags.json")
+}
+
+async fn load_tags(data_root: &std::path::Path) -> TagStore {
+    match tokio::fs::read(tags_path(data_root)).await {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+        Err(_) => TagStore::default(),
+    }
+}
+
+async fn save_tags(data_root: &std::path::Path, store: &TagStore) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(store).expect("TagStore serialization is infallible");
+    tokio::fs::write(tags_path(data_root), bytes).await
+}
+
+#[derive(Deserialize)]
+struct CreateTagRequest {
+    name: String,
+    slug: String,
+}
+
+/// `GET /api/tags` — タグ一覧(管理者のみ)。
+#[handler]
+async fn list_tags(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let store = load_tags(&state.data_root).await;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&store.tags).unwrap_or_default()))
+}
+
+/// `POST /api/tags` — タグを新規作成する(管理者のみ)。
+#[handler]
+async fn create_tag(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateTagRequest>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    if body.name.trim().is_empty() || body.slug.trim().is_empty() {
+        return Ok(Response::builder().status(poem::http::StatusCode::BAD_REQUEST).body("name and slug must not be empty"));
+    }
+    let mut store = load_tags(&state.data_root).await;
+    let id = store.next_id;
+    store.next_id += 1;
+    let tag = Tag { id, name: body.name.clone(), slug: body.slug.clone() };
+    store.tags.push(tag.clone());
+    save_tags(&state.data_root, &store)
+        .await
+        .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Response::builder()
+        .status(poem::http::StatusCode::CREATED)
+        .content_type("application/json")
+        .body(serde_json::to_vec(&tag).unwrap_or_default()))
+}
+
+/// `DELETE /api/tags/:id` — タグを削除する(管理者のみ)。既存投稿の
+/// `tags`参照は自動的には剥がさない(カテゴリと同じ単純さ優先の方針)。
+#[handler]
+async fn delete_tag(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
+    require_admin_session(req, &state)?;
+    let mut store = load_tags(&state.data_root).await;
+    let before = store.tags.len();
+    store.tags.retain(|t| t.id != id);
+    if store.tags.len() == before {
+        return Ok(Response::builder().status(poem::http::StatusCode::NOT_FOUND).body("tag not found"));
+    }
+    save_tags(&state.data_root, &store)
         .await
         .map_err(|e| poem::Error::from_string(e.to_string(), poem::http::StatusCode::INTERNAL_SERVER_ERROR))?;
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
@@ -507,8 +803,16 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <tr><td><code>PUT /api/posts/:id</code></td><td>投稿更新(ステータス変更含む、<code>draft</code>/<code>published</code>)</td></tr>
 <tr><td><code>DELETE /api/posts/:id</code></td><td>投稿削除</td></tr>
 <tr><td><code>GET /api/posts?category=:id</code></td><td>カテゴリIDで投稿を絞り込み一覧</td></tr>
+<tr><td><code>GET /api/posts?tag=:id</code></td><td>タグIDで投稿を絞り込み一覧</td></tr>
 <tr><td><code>GET /api/categories</code> / <code>POST /api/categories</code></td><td>カテゴリ一覧取得(ログイン必須) / 新規作成</td></tr>
 <tr><td><code>DELETE /api/categories/:id</code></td><td>カテゴリ削除</td></tr>
+<tr><td><code>GET /api/tags</code> / <code>POST /api/tags</code></td><td>タグ一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>DELETE /api/tags/:id</code></td><td>タグ削除</td></tr>
+<tr><td><code>GET /api/pages</code> / <code>POST /api/pages</code></td><td>固定ページ一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>GET /api/pages/:id</code></td><td>固定ページ詳細取得(ログイン必須)</td></tr>
+<tr><td><code>PUT /api/pages/:id</code></td><td>固定ページ更新(<code>slug</code>は一意性検証あり)</td></tr>
+<tr><td><code>DELETE /api/pages/:id</code></td><td>固定ページ削除</td></tr>
+<tr><td><code>GET /api/pages/by-slug/:slug</code></td><td>スラッグで公開固定ページ取得(未ログイン可、<code>published</code>のみ)</td></tr>
 <tr><td><code>POST /api/posts/:id/comments</code></td><td>コメント投稿(未ログイン可、常に未承認状態で作成)</td></tr>
 <tr><td><code>GET /api/posts/:id/comments?approved_only=true</code></td><td>指定投稿の承認済みコメント一覧(公開)</td></tr>
 <tr><td><code>GET /api/comments</code></td><td>全コメント一覧(未承認含む、ログイン必須)</td></tr>
@@ -519,7 +823,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <div class="warn">
 <strong>正直な開示: まだ実装していない機能</strong>
 <ul>
-<li>固定ページ・カスタム投稿タイプ</li>
+<li>カスタム投稿タイプ</li>
 <li>テーマ・ウィジェット</li>
 <li>プラグイン機構(PHPプラグイン互換レイヤは技術調査段階、未着手)</li>
 <li>メディアライブラリ</li>
@@ -631,6 +935,11 @@ async fn main() -> anyhow::Result<()> {
         .at("/api/posts/:id", get(get_post).put(update_post).delete(delete_post))
         .at("/api/categories", get(list_categories).post(create_category))
         .at("/api/categories/:id", delete(delete_category))
+        .at("/api/pages", get(list_pages).post(create_page))
+        .at("/api/pages/by-slug/:slug", get(get_page_by_slug))
+        .at("/api/pages/:id", get(get_page).put(update_page).delete(delete_page))
+        .at("/api/tags", get(list_tags).post(create_tag))
+        .at("/api/tags/:id", delete(delete_tag))
         .at("/api/posts/:id/comments", get(list_post_comments).post(create_comment))
         .at("/api/comments", get(list_all_comments))
         .at("/api/comments/:id/approve", post(approve_comment))
@@ -665,6 +974,11 @@ mod tests {
             .at("/api/posts/:id", get(get_post).put(update_post).delete(delete_post))
             .at("/api/categories", get(list_categories).post(create_category))
             .at("/api/categories/:id", delete(delete_category))
+            .at("/api/pages", get(list_pages).post(create_page))
+            .at("/api/pages/by-slug/:slug", get(get_page_by_slug))
+            .at("/api/pages/:id", get(get_page).put(update_page).delete(delete_page))
+            .at("/api/tags", get(list_tags).post(create_tag))
+            .at("/api/tags/:id", delete(delete_tag))
             .at("/api/posts/:id/comments", get(list_post_comments).post(create_comment))
             .at("/api/comments", get(list_all_comments))
             .at("/api/comments/:id/approve", post(approve_comment))
@@ -891,6 +1205,108 @@ mod tests {
         resp.assert_status_is_ok();
         let visible: Vec<Comment> = resp.json().await.value().deserialize();
         assert_eq!(visible.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn page_crud_slug_uniqueness_and_by_slug_lookup() {
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let token = admin_token(&state).await;
+        let client = TestClient::new(app_for(state));
+
+        let resp = client
+            .post("/api/pages")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "About", "slug": "about", "body": "We are..."}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let page: Page = resp.json().await.value().deserialize();
+        assert_eq!(page.status, PageStatus::Draft);
+
+        // 同一slugでの重複作成は409。
+        let resp = client
+            .post("/api/pages")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "About Again", "slug": "about", "body": "..."}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CONFLICT);
+
+        // draft状態ではby-slugルックアップ(公開用)で404。
+        let resp = client.get("/api/pages/by-slug/about").send().await;
+        resp.assert_status(poem::http::StatusCode::NOT_FOUND);
+
+        // publishedにすると公開ルックアップで見えるようになる。
+        let resp = client
+            .put(format!("/api/pages/{}", page.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"status": "published"}))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+
+        let resp = client.get("/api/pages/by-slug/about").send().await;
+        resp.assert_status_is_ok();
+        let found: Page = resp.json().await.value().deserialize();
+        assert_eq!(found.title, "About");
+
+        let resp = client.get("/api/pages").header("Authorization", format!("Bearer {token}")).send().await;
+        resp.assert_status_is_ok();
+        let pages: Vec<Page> = resp.json().await.value().deserialize();
+        assert_eq!(pages.len(), 1);
+
+        let resp = client.delete(format!("/api/pages/{}", page.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        resp.assert_status_is_ok();
+
+        let resp = client.get("/api/pages/by-slug/about").send().await;
+        resp.assert_status(poem::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn tag_crud_and_post_filtering_by_tag() {
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let token = admin_token(&state).await;
+        let client = TestClient::new(app_for(state));
+
+        let resp = client
+            .post("/api/tags")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"name": "Rust", "slug": "rust"}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+        let tag: Tag = resp.json().await.value().deserialize();
+
+        let resp = client
+            .post("/api/posts")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "Tagged", "body": "...", "tags": [tag.id]}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        let resp = client
+            .post("/api/posts")
+            .header("Authorization", format!("Bearer {token}"))
+            .body_json(&serde_json::json!({"title": "Untagged", "body": "..."}))
+            .send()
+            .await;
+        resp.assert_status(poem::http::StatusCode::CREATED);
+
+        let resp = client
+            .get(format!("/api/posts?tag={}", tag.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await;
+        resp.assert_status_is_ok();
+        let posts: Vec<Post> = resp.json().await.value().deserialize();
+        assert_eq!(posts.len(), 1);
+        assert_eq!(posts[0].title, "Tagged");
+
+        let resp = client.delete(format!("/api/tags/{}", tag.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        resp.assert_status_is_ok();
     }
 
     fn tempdir() -> TempDir {
