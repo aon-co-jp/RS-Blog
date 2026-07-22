@@ -208,6 +208,84 @@ async fn delete_post(req: &Request, PathExtractor(id): PathExtractor<u64>, state
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("deleted"))
 }
 
+/// トップページ(`GET /`)のHTMLランディングページ。
+/// ブラウザで実インスタンスへアクセスしたユーザーへ、アプリの概要・
+/// 実装済みAPI一覧・未実装機能の正直な開示・ダウンロードリンクを示す
+/// (JSON APIのみで何も表示されないUXバグの修正)。
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RS-Blog</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; color: #222; }
+  h1 { margin-bottom: 0; }
+  .tagline { color: #666; margin-top: 0.2rem; }
+  code { background: #f2f2f2; padding: 0.1rem 0.35rem; border-radius: 3px; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.92rem; }
+  .warn { background: #fff8e1; border: 1px solid #ffe08a; border-radius: 6px; padding: 0.8rem 1rem; }
+  .btn { display: inline-block; background: #2d6cdf; color: #fff; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; margin-right: 0.5rem; }
+  footer { color: #888; font-size: 0.85rem; margin-top: 2rem; }
+</style>
+</head>
+<body>
+<h1>RS-Blog</h1>
+<p class="tagline">WordPress相当のブログエンジン — Rust + poem(RPoem)製、高速・高セキュリティ・省メモリ志向。v0.1.0。</p>
+
+<h2>これは何?</h2>
+<p>
+  <a href="https://wordpress.org/">WordPress</a>のRust版を目指すプロジェクトです。
+  v0.1.0時点では投稿(Post)のCRUDとOTPログイン(管理者のみ)を実装しています。
+</p>
+
+<h2>使い方: 現在はJSON APIのみ(ブラウザUIはまだありません)</h2>
+<p>このページ以外はすべてJSON APIです。以下のエンドポイントに対して<code>curl</code>や外部クライアントからアクセスしてください。</p>
+<table>
+<tr><th>メソッド / パス</th><th>説明</th></tr>
+<tr><td><code>GET /healthz</code></td><td>ヘルスチェック</td></tr>
+<tr><td><code>POST /api/auth/request-otp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者のみ)</td></tr>
+<tr><td><code>POST /api/auth/verify-otp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
+<tr><td><code>POST /api/auth/logout</code></td><td>ログアウト(トークン失効)</td></tr>
+<tr><td><code>GET /api/posts</code> / <code>POST /api/posts</code></td><td>投稿一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>GET /api/posts/:id</code></td><td>投稿詳細取得</td></tr>
+<tr><td><code>PUT /api/posts/:id</code></td><td>投稿更新(ステータス変更含む、<code>draft</code>/<code>published</code>)</td></tr>
+<tr><td><code>DELETE /api/posts/:id</code></td><td>投稿削除</td></tr>
+</table>
+
+<div class="warn">
+<strong>正直な開示: まだ実装していない機能</strong>
+<ul>
+<li>固定ページ・カスタム投稿タイプ</li>
+<li>テーマ・ウィジェット</li>
+<li>プラグイン機構(PHPプラグイン互換レイヤは技術調査段階、未着手)</li>
+<li>メディアライブラリ</li>
+<li>ユーザー・ロール・権限管理(登録アカウント制・アクセス制御の細分化)</li>
+<li><code>aruaru-db</code>/PostgreSQL DUAL DB構成(現状はJSONファイル永続化のみ)</li>
+</ul>
+</div>
+
+<h2>ダウンロード / インストール</h2>
+<p>
+  <a class="btn" href="https://github.com/aon-co-jp/RS-Blog/releases/latest">最新リリースをダウンロード</a>
+  <a class="btn" href="https://github.com/aon-co-jp/RS-Blog">GitHubでソースを見る</a>
+</p>
+<p>Linux(静的リンクmuslバイナリ)・Windows向けにインストーラー付きビルド済みバイナリを配布しています。詳細は<a href="https://github.com/aon-co-jp/RS-Blog#readme">README</a>参照。</p>
+
+<footer>RS-Blog v0.1.0 &mdash; <a href="https://github.com/aon-co-jp/RS-Blog">aon-co-jp/RS-Blog</a></footer>
+</body>
+</html>
+"#;
+
+#[handler]
+async fn index() -> Response {
+    Response::builder()
+        .status(poem::http::StatusCode::OK)
+        .content_type("text/html; charset=utf-8")
+        .body(INDEX_HTML)
+}
+
 #[handler]
 async fn healthz() -> &'static str {
     "ok"
@@ -282,6 +360,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email, smtp };
 
     let app = Route::new()
+        .at("/", get(index))
         .at("/healthz", get(healthz))
         .at("/api/auth/request-otp", post(request_otp))
         .at("/api/auth/verify-otp", post(verify_otp))
@@ -309,6 +388,7 @@ mod tests {
 
     fn app_for(state: AppState) -> impl poem::Endpoint {
         Route::new()
+            .at("/", get(index))
             .at("/healthz", get(healthz))
             .at("/api/auth/request-otp", post(request_otp))
             .at("/api/auth/verify-otp", post(verify_otp))
@@ -322,6 +402,21 @@ mod tests {
         let auth::RequestOtpOutcome::Issued(code) = state.auth.request_otp(&state.admin_email);
         state.auth.consume_otp(&state.admin_email, &code).unwrap();
         state.auth.create_session(&state.admin_email)
+    }
+
+    #[tokio::test]
+    async fn root_returns_landing_page_with_key_markers() {
+        // UXバグ修正の検証: JSON APIオンリーで何も表示されなかった`GET /`が
+        // アプリ名・実エンドポイント・ダウンロードリンクを含むHTMLを返すこと。
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let client = TestClient::new(app_for(state));
+        let resp = client.get("/").send().await;
+        resp.assert_status_is_ok();
+        let body = resp.0.into_body().into_string().await.unwrap();
+        assert!(body.contains("RS-Blog"));
+        assert!(body.contains("/api/posts"));
+        assert!(body.contains("https://github.com/aon-co-jp/RS-Blog/releases/latest"));
     }
 
     #[tokio::test]
