@@ -9,7 +9,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
 
 [WordPress](https://wordpress.org/)(PHP製)の、ハイスピード・
 ハイセキュリティ・省メモリなRust+[poem](https://github.com/poem-web/poem)
-(RPoem)版を目指す。`RGit`(Gitea相当)・`RJSON`(JSON処理)と同じ
+(RPoem)版を目指す。`RS-Git`(Gitea相当)・`RJSON`(JSON処理)と同じ
 `aon-co-jp`エコシステムの一員。
 
 > ⚠️ **正直な開示**: 2026-07-21時点でコード未着手(このCLAUDE.mdのみの
@@ -18,7 +18,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
 
 ## 着手時に踏襲すべき既存プロジェクトの設計方針
 
-- **`RGit`**(git smart HTTP・OTPログイン・アクセス制御・容量ベースの
+- **`RS-Git`**(git smart HTTP・OTPログイン・アクセス制御・容量ベースの
   自動判定)を先行実装として参照。「正直な開示」「段階的実装」
   「型チェックだけで完了と報告しない・実機検証必須」の3方針は共通。
 - **`open-easy-web`**(PHP実行対応の自己学習AI判定、`php_detector.rs`)
@@ -37,7 +37,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
 ## 方針決定事項(2026-07-21、ユーザー確認済み)
 
 - **着手順番**: `RS-Chiketto`・`RS-Blog`・`RS-EC`は同時並行ではなく
-  **1つずつ順番に、`RGit`と同じ深さまで作り込んでから次へ**進める。
+  **1つずつ順番に、`RS-Git`と同じ深さまで作り込んでから次へ**進める。
   どれを最初にするかは次回セッション冒頭で決定。
 - **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB)を採用、
   3プロジェクトで統一する。加えて**PostgreSQLとのDUAL DATABASE構成も
@@ -83,7 +83,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
   このHANDOFF更新のみをコミットしてpushする。
 
 - **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
-  VPS空フォルダ・ローカル作業フォルダを用意。次回、`RGit`と同じ構成
+  VPS空フォルダ・ローカル作業フォルダを用意。次回、`RS-Git`と同じ構成
   (`Cargo.toml`+`poem`)でのブートストラップに着手する。
   - 次にすべきこと: (1) 3プロジェクトのうちどれから着手するか決定、
     (2) WordPressの機能のうちMVP範囲の選定(投稿+固定ページの表示
@@ -94,7 +94,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
   (`RS-Chiketto`のv0.1.0ブートストラップと全く同じパターンを踏襲):
   1. `RS-Chiketto`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTP
      ログイン機構、環境変数名のみ`RSBLOG_*`に変更)。v0.1.0時点では
-     管理者アカウント(`RSBLOG_ADMIN_EMAIL`)のみログイン可能(`RGit`/
+     管理者アカウント(`RSBLOG_ADMIN_EMAIL`)のみログイン可能(`RS-Git`/
      `RS-Chiketto`にある登録アカウント制・アクセス制御の細分化は
      まだ移植していない、次回以降の増分)。
   2. 投稿(Post)のCRUD: `POST/GET /api/posts`・
@@ -124,7 +124,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
   5. `README.md`に「現状」セクションを追加(既存のマーケティング文・
      開発開始日は変更せず)。
   - **次にすべきこと**: (1) 実機(VPS)でのcurlベース実HTTPスモーク
-    テスト(OTPメール実送信含む)、(2) `RGit`にある登録アカウント制・
+    テスト(OTPメール実送信含む)、(2) `RS-Git`にある登録アカウント制・
     アクセス制御(閲覧/編集の個別許可)の移植、(3) 固定ページ・
     カスタム投稿タイプ・テーマ・ウィジェット等の追加機能、
     (4) PHPプラグイン互換レイヤの技術調査、(5) `aruaru-db`/PostgreSQL
@@ -174,7 +174,7 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
 
 ## 公開先・配布方針(2026-07-21、ユーザー確認済み、着手時に反映すること)
 
-- **公開パス**: `runo.tokyo/blog`(`RGit`の`runo.tokyo/rgit`・
+- **公開パス**: `runo.tokyo/blog`(`RS-Git`の`runo.tokyo/rgit`・
   `RS-Chiketto`の`runo.tokyo/chiketto`と同じパス方式、VPS上の
   ポートは`8101`)。
 - **クロスプラットフォーム配布**: AlmaLinux・Ubuntu・Debian・Fedora・
