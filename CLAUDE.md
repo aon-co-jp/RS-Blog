@@ -61,6 +61,27 @@ VPS上の作業パス: `/root/RS-Blog`(空フォルダ作成済み、2026-07-21)
 
 ## HANDOFF
 
+- **2026-07-22 実バイナリ起動による実HTTPスモークテストを実施(既存の
+  「未実施」だった項目の解消)**: `cargo build`(警告0件)・`cargo test`
+  (**16件全green**、前回記録の11件から投稿以外にカテゴリ/タグ/固定ページ/
+  コメントモデレーションのテストが増えていた)を確認した上で、
+  `target/debug/rs-blog.exe`を`RSBLOG_PORT=8199`/一時`RSBLOG_DATA_DIR`で
+  実際に起動し、curlで以下を実HTTP確認した: (1) `GET /`が200・本文に
+  `RS-Blog`の文字列を含む、(2) `GET /healthz`が`ok`、(3) 未ログインでの
+  `GET /api/posts`が401、(4) `POST /api/auth/request-otp`が
+  (`RSBLOG_SMTP_*`未設定のサンドボックスのため)503——ハンドラの
+  `state.smtp.is_none()`分岐が実際にこの通り応答することを実機で確認。
+  **正直な開示・残る検証の限界**: このサンドボックスに実SMTPサーバー
+  (`RSBLOG_SMTP_*`)が用意できないため、OTPメール実送信→`verify-otp`→
+  トークン取得→`POST/GET/PUT/DELETE /api/posts`の認証つき一気通貫は
+  今回も実機curlでは未実施のまま(`cargo test`内の`TestClient`による
+  インメモリE2E、5件+新規カテゴリ/タグ/固定ページ/コメント関連が
+  この部分を代替検証している)。次回、実SMTP環境(VPS等)が使える
+  セッションで、OTP発行→受信→`verify-otp`→Bearerトークンでの投稿CRUDを
+  実際のメール受信込みでcurl検証すること。
+  検証後、作業ツリーはクリーン(コミット対象の変更なし)だったため、
+  このHANDOFF更新のみをコミットしてpushする。
+
 - **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
   VPS空フォルダ・ローカル作業フォルダを用意。次回、`RGit`と同じ構成
   (`Cargo.toml`+`poem`)でのブートストラップに着手する。
