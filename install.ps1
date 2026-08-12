@@ -1,4 +1,4 @@
-# RS-Blog インストールスクリプト(Windows / Windows Server 共通)。
+﻿# RS-Blog インストールスクリプト(Windows / Windows Server 共通)。
 #
 # 使い方(管理者権限のPowerShellで):
 #   Invoke-WebRequest -Uri "https://github.com/aon-co-jp/RS-Blog/releases/latest/download/rs-blog-windows-x86_64.zip" -OutFile rs-blog.zip
