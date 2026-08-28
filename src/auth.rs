@@ -1,8 +1,31 @@
-//! メールアドレス宛のワンタイムパスワード(OTP)認証。
+//! メールアドレス宛のワンタイムパスワード(OTP)認証+QR確認ログイン
+//! (2026-08-28追加)。
 //! [`open-easy-web`](https://github.com/aon-co-jp/open-easy-web)の
 //! `server/src/auth.rs`と同じ設計(固定パスワード非保存、OTPは
 //! SHA-256ハッシュのみ保持)を踏襲。ログイン対象は`RSBLOG_ADMIN_EMAIL`
 //! (管理者)のみ(v0.1.0時点。登録アカウント制はまだ移植していない)。
+//!
+//! ## ログイン方式(2026-08-28新設、ユーザー指示「email OTP・QR撮影
+//! のみ・email OTP+QR撮影、いずれも選べるように」への対応)
+//!
+//! `RS-Blog`は公開ブログの管理者アカウントであり(投稿の改ざん・削除が
+//! 可能)、open-easy-web(VPS/サイト管理)と同様に**「パスワード無し
+//! (認証省略)」モードは意図的に実装しない**——コンテンツの完全性に
+//! 関わる重要操作を扱うため。実装するのは以下の3方式のみ:
+//! - `"otp"`(既定): 既存のメールOTP単体。
+//! - `"qr"`: 事前のOTP検証なしで、QR撮影のみでログインする
+//!   (`qr-login/start`)。
+//! - `"otp_qr"`: OTP検証成功後、セッションを即発行せずQR確認を第二要素
+//!   として要求する(真の2FA)。
+//!
+//! QR確認は公開鍵・秘密鍵などの非対称暗号を一切使わない——短命
+//! (3分・1回限り)なランダムトークンを含むURLを生成するだけで、
+//! 確認端末でこのURLを開くとボタン操作無しに自動的に承認される
+//! (open-english/open-easy-webと同じ設計)。**正直な開示**: これは
+//! 「その場でカメラ画像を解析する生体認証」ではなく、単に短命URLを
+//! 開いてサーバーへPOSTする操作に過ぎない——画面を他人に見られた
+//! 場合、その人もURLを開けてしまう(有効期限3分+1回限りの消費で
+//! 被害範囲を抑える設計)。
 
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -13,6 +36,27 @@ use std::time::{Duration, Instant};
 const OTP_TTL: Duration = Duration::from_secs(5 * 60);
 const SESSION_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 const MAX_ATTEMPTS: u32 = 5;
+const QR_LOGIN_TTL: Duration = Duration::from_secs(3 * 60);
+
+pub const LOGIN_MODE_OTP: &str = "otp";
+pub const LOGIN_MODE_QR: &str = "qr";
+pub const LOGIN_MODE_OTP_QR: &str = "otp_qr";
+
+pub fn is_valid_login_mode(s: &str) -> bool {
+    matches!(s, LOGIN_MODE_OTP | LOGIN_MODE_QR | LOGIN_MODE_OTP_QR)
+}
+
+/// メールアドレスの一部を伏せる(QR確認ページの表示用)。
+fn mask_email(email: &str) -> String {
+    match email.find('@') {
+        Some(at) => {
+            let (local, domain) = email.split_at(at);
+            let visible: String = local.chars().take(2).collect();
+            format!("{visible}***{domain}")
+        }
+        None => "***".to_string(),
+    }
+}
 
 fn hash(value: &str) -> String {
     let mut hasher = Sha256::new();
@@ -42,10 +86,29 @@ struct Session {
     expires_at: Instant,
 }
 
-#[derive(Default)]
+struct QrLoginEntry {
+    account_email: String,
+    confirmed: bool,
+    expires_at: Instant,
+}
+
 pub struct AuthStore {
     pending: Mutex<HashMap<String, PendingOtp>>,
     sessions: Mutex<HashMap<String, Session>>,
+    /// キーはQRログインセッションID。
+    qr_logins: Mutex<HashMap<String, QrLoginEntry>>,
+    login_mode: Mutex<String>,
+}
+
+impl Default for AuthStore {
+    fn default() -> Self {
+        AuthStore {
+            pending: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            qr_logins: Mutex::new(HashMap::new()),
+            login_mode: Mutex::new(LOGIN_MODE_OTP.to_string()),
+        }
+    }
 }
 
 pub enum RequestOtpOutcome {
@@ -104,6 +167,84 @@ impl AuthStore {
 
     pub fn logout(&self, token: &str) {
         self.sessions.lock().unwrap().remove(token);
+    }
+
+    pub fn login_mode(&self) -> String {
+        self.login_mode.lock().unwrap().clone()
+    }
+
+    /// `is_valid_login_mode`で検証済みの値のみ渡すこと(呼び出し側の
+    /// `main.rs`ハンドラで検証する)。
+    pub fn set_login_mode(&self, mode: &str) {
+        *self.login_mode.lock().unwrap() = mode.to_string();
+    }
+
+    /// QR確認ログインセッションを開始する(`account_email`宛)。
+    /// `qr`モード(事前のOTP検証不要)・`otp_qr`モード(OTP検証成功後の
+    /// 第二要素)いずれからも呼ぶ。返り値はQRコードに埋め込むURLの
+    /// 末尾に付ける短命なID。
+    pub fn start_qr_login(&self, account_email: &str) -> String {
+        let mut logins = self.qr_logins.lock().unwrap();
+        logins.retain(|_, v| v.expires_at > Instant::now());
+        let id = generate_token();
+        logins.insert(
+            id.clone(),
+            QrLoginEntry { account_email: account_email.to_string(), confirmed: false, expires_at: Instant::now() + QR_LOGIN_TTL },
+        );
+        id
+    }
+
+    /// QR確認ページが「どのアカウントのログインを確認しようとしているか」
+    /// を表示するための、マスク済みメールアドレス。
+    pub fn qr_login_masked_email(&self, id: &str) -> Option<String> {
+        let logins = self.qr_logins.lock().unwrap();
+        let entry = logins.get(id).filter(|e| e.expires_at > Instant::now())?;
+        Some(mask_email(&entry.account_email))
+    }
+
+    /// QR確認ページの読み込み時に自動的に呼ばれる(ボタン操作は不要な
+    /// 設計)。このQRセッションを「確認済み」にするだけで、まだ
+    /// セッショントークンは発行しない(確認端末とプライマリ端末が
+    /// 別物のため、実際のトークンはプライマリ端末側の`finish_qr_login`
+    /// が発行する)。
+    pub fn confirm_qr_login(&self, id: &str) -> Result<(), VerifyError> {
+        let mut logins = self.qr_logins.lock().unwrap();
+        let Some(entry) = logins.get_mut(id) else {
+            return Err(VerifyError::NotRequested);
+        };
+        if Instant::now() > entry.expires_at {
+            logins.remove(id);
+            return Err(VerifyError::Expired);
+        }
+        entry.confirmed = true;
+        Ok(())
+    }
+
+    /// プライマリ端末が数秒おきにポーリングして、確認済みになったかを見る。
+    pub fn qr_login_status(&self, id: &str) -> Option<bool> {
+        let logins = self.qr_logins.lock().unwrap();
+        logins.get(id).filter(|e| e.expires_at > Instant::now()).map(|e| e.confirmed)
+    }
+
+    /// 確認済みであることを見たプライマリ端末が呼ぶ——実際のセッション
+    /// トークンをここで初めて発行する(QRセッション自体は使い捨てで
+    /// 直後に消費・削除する)。
+    pub fn finish_qr_login(&self, id: &str) -> Result<String, VerifyError> {
+        let mut logins = self.qr_logins.lock().unwrap();
+        let Some(entry) = logins.get(id) else {
+            return Err(VerifyError::NotRequested);
+        };
+        if Instant::now() > entry.expires_at {
+            logins.remove(id);
+            return Err(VerifyError::Expired);
+        }
+        if !entry.confirmed {
+            return Err(VerifyError::Mismatch);
+        }
+        let account_email = entry.account_email.clone();
+        logins.remove(id);
+        drop(logins);
+        Ok(self.create_session(&account_email))
     }
 }
 
@@ -174,6 +315,52 @@ mod tests {
     fn unknown_token_is_invalid() {
         let store = AuthStore::default();
         assert!(store.session_email("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn login_mode_defaults_to_otp_and_can_be_changed() {
+        let store = AuthStore::default();
+        assert_eq!(store.login_mode(), LOGIN_MODE_OTP);
+        store.set_login_mode(LOGIN_MODE_QR);
+        assert_eq!(store.login_mode(), LOGIN_MODE_QR);
+    }
+
+    #[test]
+    fn is_valid_login_mode_accepts_known_values_only() {
+        assert!(is_valid_login_mode("otp"));
+        assert!(is_valid_login_mode("qr"));
+        assert!(is_valid_login_mode("otp_qr"));
+        assert!(!is_valid_login_mode("none"));
+        assert!(!is_valid_login_mode("password"));
+    }
+
+    #[test]
+    fn qr_only_login_full_flow_issues_a_session() {
+        let store = AuthStore::default();
+        let id = store.start_qr_login("admin@example.com");
+        assert_eq!(store.qr_login_masked_email(&id).as_deref(), Some("ad***@example.com"));
+        assert_eq!(store.qr_login_status(&id), Some(false));
+        store.confirm_qr_login(&id).unwrap();
+        assert_eq!(store.qr_login_status(&id), Some(true));
+        let token = store.finish_qr_login(&id).unwrap();
+        assert_eq!(store.session_email(&token).as_deref(), Some("admin@example.com"));
+        // QRセッションは使い捨て(finish後は消費済み)。
+        assert!(matches!(store.finish_qr_login(&id), Err(VerifyError::NotRequested)));
+    }
+
+    #[test]
+    fn finishing_qr_login_before_confirmation_fails() {
+        let store = AuthStore::default();
+        let id = store.start_qr_login("admin@example.com");
+        assert!(matches!(store.finish_qr_login(&id), Err(VerifyError::Mismatch)));
+    }
+
+    #[test]
+    fn unknown_qr_login_id_is_rejected() {
+        let store = AuthStore::default();
+        assert!(store.qr_login_masked_email("does-not-exist").is_none());
+        assert!(matches!(store.confirm_qr_login("does-not-exist"), Err(VerifyError::NotRequested)));
+        assert!(matches!(store.finish_qr_login("does-not-exist"), Err(VerifyError::NotRequested)));
     }
 
     #[test]
