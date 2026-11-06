@@ -20,6 +20,7 @@
 //! DUAL DB構成への移行は未着手、`CLAUDE.md`のHANDOFF参照)。
 
 mod auth;
+mod connect;
 mod mail;
 
 use std::path::PathBuf;
@@ -29,7 +30,7 @@ use poem::listener::TcpListener;
 use poem::middleware::Tracing;
 use poem::web::Data;
 use poem::{
-    delete, get, handler, post,
+    get, handler, post,
     web::Path as PathExtractor,
     EndpointExt, Request, Response, Result as PoemResult, Route, Server,
 };
@@ -116,7 +117,7 @@ struct CreatePostRequest {
     tags: Vec<u64>,
 }
 
-/// `POST /api/posts` — 投稿を新規作成する(ログイン必須、初期状態は`draft`)。
+/// `POST /rs_blog.v1.Posts/Create` — 投稿を新規作成する(ログイン必須、初期状態は`draft`)。
 /// v0.1.0時点では固定ページ・カスタム投稿タイプは未実装、全投稿が
 /// 単一のフラットな一覧に入る(次の増分で対応、CLAUDE.md参照)。
 #[handler]
@@ -149,7 +150,7 @@ async fn create_post(req: &Request, state: Data<&AppState>, body: poem::web::Jso
         .body(serde_json::to_vec(&post).unwrap_or_default()))
 }
 
-/// `GET /api/posts` — 投稿一覧(ログイン必須、v0.1.0時点では
+/// `POST /rs_blog.v1.Posts/List` — 投稿一覧(ログイン必須、v0.1.0時点では
 /// 閲覧範囲の絞り込みは無く管理者のみが閲覧可能——公開ページとしての
 /// 未ログイン閲覧は次の増分で追加する)。
 #[handler]
@@ -197,7 +198,7 @@ struct UpdatePostRequest {
     tags: Option<Vec<u64>>,
 }
 
-/// `PUT /api/posts/:id` — 投稿のタイトル・本文・ステータスを更新する
+/// `POST /rs_blog.v1.Posts/Update` — 投稿のタイトル・本文・ステータスを更新する
 /// (ログイン必須、指定したフィールドのみ更新)。
 #[handler]
 async fn update_post(
@@ -237,7 +238,7 @@ async fn update_post(
         .body(serde_json::to_vec(&updated).unwrap_or_default()))
 }
 
-/// `DELETE /api/posts/:id` — 投稿を削除する(ログイン必須)。
+/// `POST /rs_blog.v1.Posts/Delete` — 投稿を削除する(ログイン必須)。
 #[handler]
 async fn delete_post(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -293,7 +294,7 @@ struct CreateCategoryRequest {
     slug: String,
 }
 
-/// `GET /api/categories` — カテゴリ一覧(管理者のみ)。
+/// `POST /rs_blog.v1.Categories/List` — カテゴリ一覧(管理者のみ)。
 #[handler]
 async fn list_categories(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -304,7 +305,7 @@ async fn list_categories(req: &Request, state: Data<&AppState>) -> PoemResult<Re
         .body(serde_json::to_vec(&store.categories).unwrap_or_default()))
 }
 
-/// `POST /api/categories` — カテゴリを新規作成する(管理者のみ)。
+/// `POST /rs_blog.v1.Categories/Create` — カテゴリを新規作成する(管理者のみ)。
 #[handler]
 async fn create_category(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateCategoryRequest>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -325,7 +326,7 @@ async fn create_category(req: &Request, state: Data<&AppState>, body: poem::web:
         .body(serde_json::to_vec(&category).unwrap_or_default()))
 }
 
-/// `DELETE /api/categories/:id` — カテゴリを削除する(管理者のみ)。
+/// `POST /rs_blog.v1.Categories/Delete` — カテゴリを削除する(管理者のみ)。
 /// 既存投稿の`categories`参照は自動的には剥がさない(単純さ優先、
 /// 次の増分での改善候補)。
 #[handler]
@@ -396,7 +397,7 @@ struct CreatePageRequest {
     body: String,
 }
 
-/// `POST /api/pages` — 固定ページを新規作成する(管理者のみ、
+/// `POST /rs_blog.v1.Pages/Create` — 固定ページを新規作成する(管理者のみ、
 /// 初期状態は`draft`)。`slug`は既存ページと重複してはならない。
 #[handler]
 async fn create_page(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreatePageRequest>) -> PoemResult<Response> {
@@ -430,7 +431,7 @@ async fn create_page(req: &Request, state: Data<&AppState>, body: poem::web::Jso
         .body(serde_json::to_vec(&page).unwrap_or_default()))
 }
 
-/// `GET /api/pages` — 固定ページ一覧(管理者のみ)。
+/// `POST /rs_blog.v1.Pages/List` — 固定ページ一覧(管理者のみ)。
 #[handler]
 async fn list_pages(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -454,7 +455,7 @@ async fn get_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: D
     }
 }
 
-/// `GET /api/pages/by-slug/:slug` — スラッグでの公開固定ページ取得
+/// `POST /rs_blog.v1.Pages/GetBySlug` — スラッグでの公開固定ページ取得
 /// (未ログインで可、`published`状態のもののみ返す——実サイトで
 /// URLスラッグから固定ページを描画する際のルックアップ相当)。
 #[handler]
@@ -477,7 +478,7 @@ struct UpdatePageRequest {
     status: Option<PageStatus>,
 }
 
-/// `PUT /api/pages/:id` — 固定ページを更新する(管理者のみ、指定した
+/// `POST /rs_blog.v1.Pages/Update` — 固定ページを更新する(管理者のみ、指定した
 /// フィールドのみ更新)。`slug`変更時も一意性を検証する。
 #[handler]
 async fn update_page(
@@ -519,7 +520,7 @@ async fn update_page(
         .body(serde_json::to_vec(&updated).unwrap_or_default()))
 }
 
-/// `DELETE /api/pages/:id` — 固定ページを削除する(管理者のみ)。
+/// `POST /rs_blog.v1.Pages/Delete` — 固定ページを削除する(管理者のみ)。
 #[handler]
 async fn delete_page(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -576,7 +577,7 @@ struct CreateTagRequest {
     slug: String,
 }
 
-/// `GET /api/tags` — タグ一覧(管理者のみ)。
+/// `POST /rs_blog.v1.Tags/List` — タグ一覧(管理者のみ)。
 #[handler]
 async fn list_tags(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -587,7 +588,7 @@ async fn list_tags(req: &Request, state: Data<&AppState>) -> PoemResult<Response
         .body(serde_json::to_vec(&store.tags).unwrap_or_default()))
 }
 
-/// `POST /api/tags` — タグを新規作成する(管理者のみ)。
+/// `POST /rs_blog.v1.Tags/Create` — タグを新規作成する(管理者のみ)。
 #[handler]
 async fn create_tag(req: &Request, state: Data<&AppState>, body: poem::web::Json<CreateTagRequest>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -608,7 +609,7 @@ async fn create_tag(req: &Request, state: Data<&AppState>, body: poem::web::Json
         .body(serde_json::to_vec(&tag).unwrap_or_default()))
 }
 
-/// `DELETE /api/tags/:id` — タグを削除する(管理者のみ)。既存投稿の
+/// `POST /rs_blog.v1.Tags/Delete` — タグを削除する(管理者のみ)。既存投稿の
 /// `tags`参照は自動的には剥がさない(カテゴリと同じ単純さ優先の方針)。
 #[handler]
 async fn delete_tag(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
@@ -668,7 +669,7 @@ struct CreateCommentRequest {
     body: String,
 }
 
-/// `POST /api/posts/:id/comments` — コメントを投稿する(未ログインで可、
+/// `POST /rs_blog.v1.Comments/Create` — コメントを投稿する(未ログインで可、
 /// ただし常に`approved: false`で作成される——WordPressのモデレーション
 /// キューのデフォルト挙動と同じ)。対象の投稿が存在しない場合は404。
 #[handler]
@@ -705,10 +706,10 @@ async fn create_comment(
         .body(serde_json::to_vec(&comment).unwrap_or_default()))
 }
 
-/// `GET /api/posts/:id/comments?approved_only=true` — 指定投稿のコメント
+/// `POST /rs_blog.v1.Comments/ListForPost (approved_only=true)` — 指定投稿のコメント
 /// 一覧(公開、未ログインで可)。`approved_only=true`を付けない場合も
 /// 公開エンドポイントとしては承認済みのみ返す(未承認コメントの公開
-/// 閲覧は`GET /api/comments`(管理者専用)からのみ可能)。
+/// 閲覧は`POST /rs_blog.v1.Comments/ListAll`(管理者専用)からのみ可能)。
 #[handler]
 async fn list_post_comments(PathExtractor(post_id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     let store = load_comments(&state.data_root).await;
@@ -719,7 +720,7 @@ async fn list_post_comments(PathExtractor(post_id): PathExtractor<u64>, state: D
         .body(serde_json::to_vec(&comments).unwrap_or_default()))
 }
 
-/// `GET /api/comments` — 全コメント一覧(管理者のみ、未承認も含む)。
+/// `POST /rs_blog.v1.Comments/ListAll` — 全コメント一覧(管理者のみ、未承認も含む)。
 #[handler]
 async fn list_all_comments(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -730,7 +731,7 @@ async fn list_all_comments(req: &Request, state: Data<&AppState>) -> PoemResult<
         .body(serde_json::to_vec(&store.comments).unwrap_or_default()))
 }
 
-/// `POST /api/comments/:id/approve` — コメントを承認する(管理者のみ)。
+/// `POST /rs_blog.v1.Comments/Approve` — コメントを承認する(管理者のみ)。
 #[handler]
 async fn approve_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -749,7 +750,7 @@ async fn approve_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, s
         .body(serde_json::to_vec(&updated).unwrap_or_default()))
 }
 
-/// `DELETE /api/comments/:id` — コメントを削除する(管理者のみ)。
+/// `POST /rs_blog.v1.Comments/Delete` — コメントを削除する(管理者のみ)。
 #[handler]
 async fn delete_comment(req: &Request, PathExtractor(id): PathExtractor<u64>, state: Data<&AppState>) -> PoemResult<Response> {
     require_admin_session(req, &state)?;
@@ -802,36 +803,36 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <table>
 <tr><th>メソッド / パス</th><th>説明</th></tr>
 <tr><td><code>GET /healthz</code></td><td>ヘルスチェック</td></tr>
-<tr><td><code>POST /api/auth/request-otp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者のみ)</td></tr>
-<tr><td><code>POST /api/auth/verify-otp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
-<tr><td><code>POST /api/auth/logout</code></td><td>ログアウト(トークン失効)</td></tr>
-<tr><td><code>GET</code> / <code>POST /api/auth/login-mode</code></td><td>ログイン方式の取得(未ログイン可) / 変更(<code>otp</code>/<code>qr</code>/<code>otp_qr</code>、管理者ログイン必須)</td></tr>
-<tr><td><code>POST /api/auth/qr-login/start</code></td><td>QR撮影のみでのログインを開始(<code>login_mode=qr</code>時のみ)</td></tr>
-<tr><td><code>GET /api/auth/qr-login/whoami?id=</code></td><td>QR確認ページ向け、マスク済みメールアドレス取得</td></tr>
-<tr><td><code>POST /api/auth/qr-login/confirm</code></td><td>QR確認ページが自動的に呼ぶ、確認済みにする</td></tr>
-<tr><td><code>GET /api/auth/qr-login/status?id=</code></td><td>プライマリ端末がポーリングして確認状況を見る</td></tr>
-<tr><td><code>POST /api/auth/qr-login/finish</code></td><td>確認済みならセッショントークンを発行</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/RequestOtp</code></td><td>ログイン用ワンタイムパスワードをメール送信(管理者のみ)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/VerifyOtp</code></td><td>OTPを検証してセッショントークンを発行</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/Logout</code></td><td>ログアウト(トークン失効)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/GetLoginMode</code> / <code>POST /rs_blog.v1.Auth/SetLoginMode</code></td><td>ログイン方式の取得(未ログイン可) / 変更(<code>otp</code>/<code>qr</code>/<code>otp_qr</code>、管理者ログイン必須)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/QrLoginStart</code></td><td>QR撮影のみでのログインを開始(<code>login_mode=qr</code>時のみ)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/QrLoginWhoami (id=)</code></td><td>QR確認ページ向け、マスク済みメールアドレス取得</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/QrLoginConfirm</code></td><td>QR確認ページが自動的に呼ぶ、確認済みにする</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/QrLoginStatus (id=)</code></td><td>プライマリ端末がポーリングして確認状況を見る</td></tr>
+<tr><td><code>POST /rs_blog.v1.Auth/QrLoginFinish</code></td><td>確認済みならセッショントークンを発行</td></tr>
 <tr><td><code>GET /qr-confirm.html</code></td><td>QR撮影用の確認ページ(スマホ/タブレット/WEBカメラで開く)</td></tr>
-<tr><td><code>GET /api/posts</code> / <code>POST /api/posts</code></td><td>投稿一覧取得(ログイン必須) / 新規作成</td></tr>
-<tr><td><code>GET /api/posts/:id</code></td><td>投稿詳細取得</td></tr>
-<tr><td><code>PUT /api/posts/:id</code></td><td>投稿更新(ステータス変更含む、<code>draft</code>/<code>published</code>)</td></tr>
-<tr><td><code>DELETE /api/posts/:id</code></td><td>投稿削除</td></tr>
-<tr><td><code>GET /api/posts?category=:id</code></td><td>カテゴリIDで投稿を絞り込み一覧</td></tr>
-<tr><td><code>GET /api/posts?tag=:id</code></td><td>タグIDで投稿を絞り込み一覧</td></tr>
-<tr><td><code>GET /api/categories</code> / <code>POST /api/categories</code></td><td>カテゴリ一覧取得(ログイン必須) / 新規作成</td></tr>
-<tr><td><code>DELETE /api/categories/:id</code></td><td>カテゴリ削除</td></tr>
-<tr><td><code>GET /api/tags</code> / <code>POST /api/tags</code></td><td>タグ一覧取得(ログイン必須) / 新規作成</td></tr>
-<tr><td><code>DELETE /api/tags/:id</code></td><td>タグ削除</td></tr>
-<tr><td><code>GET /api/pages</code> / <code>POST /api/pages</code></td><td>固定ページ一覧取得(ログイン必須) / 新規作成</td></tr>
-<tr><td><code>GET /api/pages/:id</code></td><td>固定ページ詳細取得(ログイン必須)</td></tr>
-<tr><td><code>PUT /api/pages/:id</code></td><td>固定ページ更新(<code>slug</code>は一意性検証あり)</td></tr>
-<tr><td><code>DELETE /api/pages/:id</code></td><td>固定ページ削除</td></tr>
-<tr><td><code>GET /api/pages/by-slug/:slug</code></td><td>スラッグで公開固定ページ取得(未ログイン可、<code>published</code>のみ)</td></tr>
-<tr><td><code>POST /api/posts/:id/comments</code></td><td>コメント投稿(未ログイン可、常に未承認状態で作成)</td></tr>
-<tr><td><code>GET /api/posts/:id/comments?approved_only=true</code></td><td>指定投稿の承認済みコメント一覧(公開)</td></tr>
-<tr><td><code>GET /api/comments</code></td><td>全コメント一覧(未承認含む、ログイン必須)</td></tr>
-<tr><td><code>POST /api/comments/:id/approve</code></td><td>コメントを承認</td></tr>
-<tr><td><code>DELETE /api/comments/:id</code></td><td>コメント削除</td></tr>
+<tr><td><code>POST /rs_blog.v1.Posts/List</code> / <code>POST /rs_blog.v1.Posts/Create</code></td><td>投稿一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>POST /rs_blog.v1.Posts/Get</code></td><td>投稿詳細取得</td></tr>
+<tr><td><code>POST /rs_blog.v1.Posts/Update</code></td><td>投稿更新(ステータス変更含む、<code>draft</code>/<code>published</code>)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Posts/Delete</code></td><td>投稿削除</td></tr>
+<tr><td><code>POST /rs_blog.v1.Posts/List (category=:id)</code></td><td>カテゴリIDで投稿を絞り込み一覧</td></tr>
+<tr><td><code>POST /rs_blog.v1.Posts/List (tag=:id)</code></td><td>タグIDで投稿を絞り込み一覧</td></tr>
+<tr><td><code>POST /rs_blog.v1.Categories/List</code> / <code>POST /rs_blog.v1.Categories/Create</code></td><td>カテゴリ一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>POST /rs_blog.v1.Categories/Delete</code></td><td>カテゴリ削除</td></tr>
+<tr><td><code>POST /rs_blog.v1.Tags/List</code> / <code>POST /rs_blog.v1.Tags/Create</code></td><td>タグ一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>POST /rs_blog.v1.Tags/Delete</code></td><td>タグ削除</td></tr>
+<tr><td><code>POST /rs_blog.v1.Pages/List</code> / <code>POST /rs_blog.v1.Pages/Create</code></td><td>固定ページ一覧取得(ログイン必須) / 新規作成</td></tr>
+<tr><td><code>POST /rs_blog.v1.Pages/Get</code></td><td>固定ページ詳細取得(ログイン必須)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Pages/Update</code></td><td>固定ページ更新(<code>slug</code>は一意性検証あり)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Pages/Delete</code></td><td>固定ページ削除</td></tr>
+<tr><td><code>POST /rs_blog.v1.Pages/GetBySlug</code></td><td>スラッグで公開固定ページ取得(未ログイン可、<code>published</code>のみ)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Comments/Create</code></td><td>コメント投稿(未ログイン可、常に未承認状態で作成)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Comments/ListForPost (approved_only=true)</code></td><td>指定投稿の承認済みコメント一覧(公開)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Comments/ListAll</code></td><td>全コメント一覧(未承認含む、ログイン必須)</td></tr>
+<tr><td><code>POST /rs_blog.v1.Comments/Approve</code></td><td>コメントを承認</td></tr>
+<tr><td><code>POST /rs_blog.v1.Comments/Delete</code></td><td>コメント削除</td></tr>
 </table>
 
 <div class="warn">
@@ -896,7 +897,7 @@ struct VerifyOtpRequest {
     code: String,
 }
 
-/// `POST /api/auth/verify-otp` — `login_mode`が`"otp_qr"`の場合は
+/// `POST /rs_blog.v1.Auth/VerifyOtp` — `login_mode`が`"otp_qr"`の場合は
 /// OTP成功後にセッションを即発行せず、QR確認(第二要素)セッションを
 /// 開始して`{"qr_required": true, "qr_id": ...}`を返す(真の2FA)。
 /// それ以外(既定の`"otp"`)は従来通りセッショントークンを即発行する。
@@ -922,7 +923,7 @@ async fn verify_otp(state: Data<&AppState>, body: poem::web::Json<VerifyOtpReque
     }
 }
 
-/// `GET /api/auth/login-mode` — 現在のログイン方式(未ログインでも
+/// `POST /rs_blog.v1.Auth/GetLoginMode` — 現在のログイン方式(未ログインでも
 /// 参照可、ログインフォーム側の表示分岐に使う)。
 #[handler]
 async fn get_login_mode(state: Data<&AppState>) -> Response {
@@ -937,7 +938,7 @@ struct SetLoginModeRequest {
     login_mode: String,
 }
 
-/// `POST /api/auth/login-mode` — ログイン方式を切り替える(管理者
+/// `POST /rs_blog.v1.Auth/SetLoginMode` — ログイン方式を切り替える(管理者
 /// セッション必須——最初の1回は既定の`"otp"`でログインしてから切り替える)。
 #[handler]
 async fn set_login_mode(req: &Request, state: Data<&AppState>, body: poem::web::Json<SetLoginModeRequest>) -> PoemResult<Response> {
@@ -949,7 +950,7 @@ async fn set_login_mode(req: &Request, state: Data<&AppState>, body: poem::web::
     Ok(Response::builder().status(poem::http::StatusCode::OK).body("ok"))
 }
 
-/// `POST /api/auth/qr-login/start` — QR撮影のみでのログイン(第一要素の
+/// `POST /rs_blog.v1.Auth/QrLoginStart` — QR撮影のみでのログイン(第一要素の
 /// OTP検証は不要)を開始する。`login_mode`が`"qr"`の場合のみ許可する。
 #[handler]
 async fn qr_login_start(state: Data<&AppState>) -> PoemResult<Response> {
@@ -965,7 +966,7 @@ async fn qr_login_start(state: Data<&AppState>) -> PoemResult<Response> {
         .body(serde_json::to_vec(&serde_json::json!({ "id": id })).unwrap_or_default()))
 }
 
-/// `GET /api/auth/qr-login/whoami?id=` — QR確認ページが「どのアカウント
+/// `POST /rs_blog.v1.Auth/QrLoginWhoami (id=)` — QR確認ページが「どのアカウント
 /// のログインを確認しようとしているか」を表示するための、マスク済み
 /// メールアドレス。
 #[handler]
@@ -985,7 +986,7 @@ struct QrLoginIdRequest {
     id: String,
 }
 
-/// `POST /api/auth/qr-login/confirm` — `qr-confirm.html`が読み込み時に
+/// `POST /rs_blog.v1.Auth/QrLoginConfirm` — `qr-confirm.html`が読み込み時に
 /// 自動的に呼ぶ(ボタン操作不要)。このQRセッションを確認済みにする。
 #[handler]
 async fn qr_login_confirm(state: Data<&AppState>, body: poem::web::Json<QrLoginIdRequest>) -> PoemResult<Response> {
@@ -1001,7 +1002,7 @@ async fn qr_login_confirm(state: Data<&AppState>, body: poem::web::Json<QrLoginI
     }
 }
 
-/// `GET /api/auth/qr-login/status?id=` — プライマリ端末が数秒おきに
+/// `POST /rs_blog.v1.Auth/QrLoginStatus (id=)` — プライマリ端末が数秒おきに
 /// ポーリングして、確認済みになったかを見る。
 #[handler]
 async fn qr_login_status(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
@@ -1015,7 +1016,7 @@ async fn qr_login_status(req: &Request, state: Data<&AppState>) -> PoemResult<Re
     }
 }
 
-/// `POST /api/auth/qr-login/finish` — 確認済みであることを見たプライマリ
+/// `POST /rs_blog.v1.Auth/QrLoginFinish` — 確認済みであることを見たプライマリ
 /// 端末が呼ぶ。実際のセッショントークンをここで初めて発行する。
 #[handler]
 async fn qr_login_finish(state: Data<&AppState>, body: poem::web::Json<QrLoginIdRequest>) -> PoemResult<Response> {
@@ -1109,7 +1110,7 @@ const QR_CONFIRM_HTML: &str = r#"<!doctype html>
     btn.classList.add("hidden");
     statusEl.className = "status";
     statusEl.textContent = "Confirming... / 確認中...";
-    fetch("/api/auth/qr-login/confirm", {
+    fetch("/rs_blog.v1.Auth/QrLoginConfirm", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: id }),
@@ -1121,7 +1122,7 @@ const QR_CONFIRM_HTML: &str = r#"<!doctype html>
           statusEl.textContent = "✅ Confirmed! You can close this page now. / 確認しました！このページは閉じて構いません。";
         } else {
           statusEl.className = "status err";
-          statusEl.textContent = "⚠ " + ((res.body && res.body.error) || "Failed to confirm. / 確認に失敗しました。");
+          statusEl.textContent = "⚠ " + ((res.body && (res.body.message || res.body.error)) || "Failed to confirm. / 確認に失敗しました。");
           btn.classList.remove("hidden");
         }
       })
@@ -1132,7 +1133,7 @@ const QR_CONFIRM_HTML: &str = r#"<!doctype html>
       });
   }
 
-  fetch("/api/auth/qr-login/whoami?id=" + encodeURIComponent(id))
+  fetch("/rs_blog.v1.Auth/QrLoginWhoami", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: id }) })
     .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
     .then(function (res) {
       if (res.ok && res.body && res.body.masked_email) {
@@ -1158,7 +1159,7 @@ async fn qr_confirm_page() -> Response {
     Response::builder().status(poem::http::StatusCode::OK).content_type("text/html; charset=utf-8").body(QR_CONFIRM_HTML)
 }
 
-/// `POST /api/auth/logout` — セッショントークンを失効させる。
+/// `POST /rs_blog.v1.Auth/Logout` — セッショントークンを失効させる。
 #[handler]
 async fn logout(req: &Request, state: Data<&AppState>) -> PoemResult<Response> {
     let header = req.header(poem::http::header::AUTHORIZATION).unwrap_or("");
@@ -1172,6 +1173,67 @@ fn env_data_dir() -> PathBuf {
     std::env::var("RSBLOG_DATA_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("./data"))
 }
 
+macro_rules! rpc_table {
+    ($( ($svc:literal, $m:literal, $inner:literal, $q:literal, $h:expr) ),* $(,)?) => {{
+        let inner = Route::new() $( .at($inner, post($h)) )*;
+        let defs: Vec<connect::Def> = vec![$( connect::Def { service: $svc, method: $m, inner: $inner, query: $q } ),*];
+        (inner, defs)
+    }};
+}
+
+/// Connect のパッケージ名(`POST /rs_blog.v1.<Service>/<Method>`)。
+pub const PACKAGE: &str = "rs_blog.v1";
+
+/// ルーティング定義を`main()`とテストの両方から再利用できるように切り出したもの。
+/// 公開するのは `/`・`/healthz`・`/qr-confirm.html`(規格どおりの GET)と Connect の `POST /rs_blog.v1.<Service>/<Method>` だけ。
+/// 旧 REST(`/api/...`)の経路は無い。
+fn build_routes(state: AppState) -> impl poem::Endpoint {
+    let (inner, defs) = rpc_table![
+        ("Auth", "RequestOtp", "/Auth/RequestOtp", false, request_otp),
+        ("Auth", "VerifyOtp", "/Auth/VerifyOtp", false, verify_otp),
+        ("Auth", "Logout", "/Auth/Logout", false, logout),
+        ("Auth", "GetLoginMode", "/Auth/GetLoginMode", true, get_login_mode),
+        ("Auth", "SetLoginMode", "/Auth/SetLoginMode", false, set_login_mode),
+        ("Auth", "QrLoginStart", "/Auth/QrLoginStart", false, qr_login_start),
+        ("Auth", "QrLoginWhoami", "/Auth/QrLoginWhoami", true, qr_login_whoami),
+        ("Auth", "QrLoginConfirm", "/Auth/QrLoginConfirm", false, qr_login_confirm),
+        ("Auth", "QrLoginStatus", "/Auth/QrLoginStatus", true, qr_login_status),
+        ("Auth", "QrLoginFinish", "/Auth/QrLoginFinish", false, qr_login_finish),
+        ("Posts", "List", "/Posts/List", true, list_posts),
+        ("Posts", "Create", "/Posts/Create", false, create_post),
+        ("Posts", "Get", "/Posts/Get/:id", true, get_post),
+        ("Posts", "Update", "/Posts/Update/:id", false, update_post),
+        ("Posts", "Delete", "/Posts/Delete/:id", false, delete_post),
+        ("Categories", "List", "/Categories/List", true, list_categories),
+        ("Categories", "Create", "/Categories/Create", false, create_category),
+        ("Categories", "Delete", "/Categories/Delete/:id", false, delete_category),
+        ("Pages", "List", "/Pages/List", true, list_pages),
+        ("Pages", "Create", "/Pages/Create", false, create_page),
+        ("Pages", "GetBySlug", "/Pages/GetBySlug/:slug", true, get_page_by_slug),
+        ("Pages", "Get", "/Pages/Get/:id", true, get_page),
+        ("Pages", "Update", "/Pages/Update/:id", false, update_page),
+        ("Pages", "Delete", "/Pages/Delete/:id", false, delete_page),
+        ("Tags", "List", "/Tags/List", true, list_tags),
+        ("Tags", "Create", "/Tags/Create", false, create_tag),
+        ("Tags", "Delete", "/Tags/Delete/:id", false, delete_tag),
+        ("Comments", "ListForPost", "/Comments/ListForPost/:id", true, list_post_comments),
+        ("Comments", "Create", "/Comments/Create/:id", false, create_comment),
+        ("Comments", "ListAll", "/Comments/ListAll", true, list_all_comments),
+        ("Comments", "Approve", "/Comments/Approve/:id", false, approve_comment),
+        ("Comments", "Delete", "/Comments/Delete/:id", false, delete_comment),
+    ];
+    let inner: Arc<poem::endpoint::BoxEndpoint<'static, Response>> = Arc::new(inner.data(state).boxed());
+    let mut app = Route::new()
+        .at("/", get(index))
+        .at("/healthz", get(healthz))
+        .at("/qr-confirm.html", get(qr_confirm_page));
+    for d in defs {
+        let call = connect::Call { inner: inner.clone(), def: d, package: PACKAGE };
+        app = app.at(format!("/{}.{}/{}", PACKAGE, d.service, d.method), post(call));
+    }
+    app.with(Tracing)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -1183,38 +1245,11 @@ async fn main() -> anyhow::Result<()> {
     let admin_email = std::env::var("RSBLOG_ADMIN_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string());
     let smtp = mail::SmtpConfig::from_env();
     if smtp.is_none() {
-        tracing::warn!("RSBLOG_SMTP_* not fully configured; /api/auth/request-otp will return 503");
+        tracing::warn!("RSBLOG_SMTP_* not fully configured; rs_blog.v1.Auth/RequestOtp will return 503");
     }
     let state = AppState { data_root, auth: Arc::new(auth::AuthStore::default()), admin_email, smtp };
 
-    let app = Route::new()
-        .at("/", get(index))
-        .at("/healthz", get(healthz))
-        .at("/api/auth/request-otp", post(request_otp))
-        .at("/api/auth/verify-otp", post(verify_otp))
-        .at("/api/auth/logout", post(logout))
-        .at("/api/auth/login-mode", get(get_login_mode).post(set_login_mode))
-        .at("/api/auth/qr-login/start", post(qr_login_start))
-        .at("/api/auth/qr-login/whoami", get(qr_login_whoami))
-        .at("/api/auth/qr-login/confirm", post(qr_login_confirm))
-        .at("/api/auth/qr-login/status", get(qr_login_status))
-        .at("/api/auth/qr-login/finish", post(qr_login_finish))
-        .at("/qr-confirm.html", get(qr_confirm_page))
-        .at("/api/posts", get(list_posts).post(create_post))
-        .at("/api/posts/:id", get(get_post).put(update_post).delete(delete_post))
-        .at("/api/categories", get(list_categories).post(create_category))
-        .at("/api/categories/:id", delete(delete_category))
-        .at("/api/pages", get(list_pages).post(create_page))
-        .at("/api/pages/by-slug/:slug", get(get_page_by_slug))
-        .at("/api/pages/:id", get(get_page).put(update_page).delete(delete_page))
-        .at("/api/tags", get(list_tags).post(create_tag))
-        .at("/api/tags/:id", delete(delete_tag))
-        .at("/api/posts/:id/comments", get(list_post_comments).post(create_comment))
-        .at("/api/comments", get(list_all_comments))
-        .at("/api/comments/:id/approve", post(approve_comment))
-        .at("/api/comments/:id", delete(delete_comment))
-        .data(state)
-        .with(Tracing);
+    let app = build_routes(state);
 
     let port = std::env::var("RSBLOG_PORT").unwrap_or_else(|_| "8101".to_string());
     let addr = format!("0.0.0.0:{port}");
@@ -1226,6 +1261,15 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `extra`(パス引数に当たる欄)を `base` の JSON オブジェクトへ足す。
+    fn jm(extra: serde_json::Value, base: serde_json::Value) -> serde_json::Value {
+        let mut m = base.as_object().cloned().unwrap_or_default();
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            m.insert(k, v);
+        }
+        serde_json::Value::Object(m)
+    }
+
     use poem::test::TestClient;
 
     fn test_state(dir: &std::path::Path) -> AppState {
@@ -1233,33 +1277,7 @@ mod tests {
     }
 
     fn app_for(state: AppState) -> impl poem::Endpoint {
-        Route::new()
-            .at("/", get(index))
-            .at("/healthz", get(healthz))
-            .at("/api/auth/request-otp", post(request_otp))
-            .at("/api/auth/verify-otp", post(verify_otp))
-            .at("/api/auth/logout", post(logout))
-            .at("/api/auth/login-mode", get(get_login_mode).post(set_login_mode))
-            .at("/api/auth/qr-login/start", post(qr_login_start))
-            .at("/api/auth/qr-login/whoami", get(qr_login_whoami))
-            .at("/api/auth/qr-login/confirm", post(qr_login_confirm))
-            .at("/api/auth/qr-login/status", get(qr_login_status))
-            .at("/api/auth/qr-login/finish", post(qr_login_finish))
-            .at("/qr-confirm.html", get(qr_confirm_page))
-            .at("/api/posts", get(list_posts).post(create_post))
-            .at("/api/posts/:id", get(get_post).put(update_post).delete(delete_post))
-            .at("/api/categories", get(list_categories).post(create_category))
-            .at("/api/categories/:id", delete(delete_category))
-            .at("/api/pages", get(list_pages).post(create_page))
-            .at("/api/pages/by-slug/:slug", get(get_page_by_slug))
-            .at("/api/pages/:id", get(get_page).put(update_page).delete(delete_page))
-            .at("/api/tags", get(list_tags).post(create_tag))
-            .at("/api/tags/:id", delete(delete_tag))
-            .at("/api/posts/:id/comments", get(list_post_comments).post(create_comment))
-            .at("/api/comments", get(list_all_comments))
-            .at("/api/comments/:id/approve", post(approve_comment))
-            .at("/api/comments/:id", delete(delete_comment))
-            .data(state)
+        build_routes(state)
     }
 
     async fn admin_token(state: &AppState) -> String {
@@ -1279,7 +1297,7 @@ mod tests {
         resp.assert_status_is_ok();
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("RS-Blog"));
-        assert!(body.contains("/api/posts"));
+        assert!(body.contains("rs_blog.v1.Posts"));
         assert!(body.contains("https://github.com/aon-co-jp/RS-Blog/releases/latest"));
     }
 
@@ -1288,7 +1306,7 @@ mod tests {
         let dir = tempdir();
         let state = test_state(dir.path());
         let client = TestClient::new(app_for(state));
-        let resp = client.get("/api/posts").send().await;
+        let resp = client.post("/rs_blog.v1.Posts/List").body_json(&serde_json::json!({})).send().await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
     }
 
@@ -1300,21 +1318,21 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "Hello", "body": "World"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "Hello", "body": "World"}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let created: Post = resp.json().await.value().deserialize();
         assert_eq!(created.status, PostStatus::Draft);
 
-        let resp = client.get("/api/posts").header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Posts/List").header("Authorization", format!("Bearer {token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let posts: Vec<Post> = resp.json().await.value().deserialize();
         assert_eq!(posts.len(), 1);
 
-        let resp = client.get(format!("/api/posts/{}", created.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Posts/Get").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
     }
 
@@ -1326,18 +1344,18 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "Draft post", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "Draft post", "body": "..."}))).send()
             .await;
         let created: Post = resp.json().await.value().deserialize();
 
         let resp = client
-            .put(format!("/api/posts/{}", created.id))
+            .post("/rs_blog.v1.Posts/Update")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"status": "published"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({"status": "published"}))).send()
             .await;
         resp.assert_status_is_ok();
         let updated: Post = resp.json().await.value().deserialize();
@@ -1352,17 +1370,17 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "To delete", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "To delete", "body": "..."}))).send()
             .await;
         let created: Post = resp.json().await.value().deserialize();
 
-        let resp = client.delete(format!("/api/posts/{}", created.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Posts/Delete").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
 
-        let resp = client.get(format!("/api/posts/{}", created.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Posts/Get").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": created.id}), serde_json::json!({}))).send().await;
         resp.assert_status(poem::http::StatusCode::NOT_FOUND);
     }
 
@@ -1374,10 +1392,10 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "  ", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "  ", "body": "..."}))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
     }
@@ -1390,34 +1408,34 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/categories")
+            .post("/rs_blog.v1.Categories/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"name": "News", "slug": "news"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"name": "News", "slug": "news"}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let category: Category = resp.json().await.value().deserialize();
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "Categorized", "body": "...", "categories": [category.id]}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "Categorized", "body": "...", "categories": [category.id]}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "Uncategorized", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "Uncategorized", "body": "..."}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
         let resp = client
-            .get(format!("/api/posts?category={}", category.id))
+            .post("/rs_blog.v1.Posts/List")
             .header("Authorization", format!("Bearer {token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"category": category.id.to_string()}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
         let posts: Vec<Post> = resp.json().await.value().deserialize();
@@ -1425,9 +1443,9 @@ mod tests {
         assert_eq!(posts[0].title, "Categorized");
 
         let resp = client
-            .delete(format!("/api/categories/{}", category.id))
+            .post("/rs_blog.v1.Categories/Delete")
             .header("Authorization", format!("Bearer {token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": category.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
     }
@@ -1440,44 +1458,44 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "With comments", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "With comments", "body": "..."}))).send()
             .await;
         let post: Post = resp.json().await.value().deserialize();
 
         // 未ログインでコメント投稿できる(常にapproved: falseで作成される)。
         let resp = client
-            .post(format!("/api/posts/{}/comments", post.id))
-            .body_json(&serde_json::json!({"author_name": "Alice", "body": "Nice post!"}))
-            .send()
+            .post("/rs_blog.v1.Comments/Create")
+            
+            .body_json(&jm(serde_json::json!({"id": post.id}), serde_json::json!({"author_name": "Alice", "body": "Nice post!"}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let comment: Comment = resp.json().await.value().deserialize();
         assert!(!comment.approved);
 
         // 承認前は公開一覧(approved_only)に出てこない。
-        let resp = client.get(format!("/api/posts/{}/comments?approved_only=true", post.id)).send().await;
+        let resp = client.post("/rs_blog.v1.Comments/ListForPost").body_json(&jm(serde_json::json!({"id": post.id, "approved_only": true}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let visible: Vec<Comment> = resp.json().await.value().deserialize();
         assert!(visible.is_empty());
 
         // 管理者は全件(未承認含む)を見られる。
-        let resp = client.get("/api/comments").header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Comments/ListAll").header("Authorization", format!("Bearer {token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let all: Vec<Comment> = resp.json().await.value().deserialize();
         assert_eq!(all.len(), 1);
 
         // 管理者が承認すると公開一覧に出るようになる。
         let resp = client
-            .post(format!("/api/comments/{}/approve", comment.id))
+            .post("/rs_blog.v1.Comments/Approve")
             .header("Authorization", format!("Bearer {token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"id": comment.id}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
 
-        let resp = client.get(format!("/api/posts/{}/comments?approved_only=true", post.id)).send().await;
+        let resp = client.post("/rs_blog.v1.Comments/ListForPost").body_json(&jm(serde_json::json!({"id": post.id, "approved_only": true}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let visible: Vec<Comment> = resp.json().await.value().deserialize();
         assert_eq!(visible.len(), 1);
@@ -1491,51 +1509,51 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/pages")
+            .post("/rs_blog.v1.Pages/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "About", "slug": "about", "body": "We are..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "About", "slug": "about", "body": "We are..."}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let page: Page = resp.json().await.value().deserialize();
         assert_eq!(page.status, PageStatus::Draft);
 
         // 同一slugでの重複作成は409。
         let resp = client
-            .post("/api/pages")
+            .post("/rs_blog.v1.Pages/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "About Again", "slug": "about", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "About Again", "slug": "about", "body": "..."}))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::CONFLICT);
 
         // draft状態ではby-slugルックアップ(公開用)で404。
-        let resp = client.get("/api/pages/by-slug/about").send().await;
+        let resp = client.post("/rs_blog.v1.Pages/GetBySlug").body_json(&jm(serde_json::json!({"slug": "about"}), serde_json::json!({}))).send().await;
         resp.assert_status(poem::http::StatusCode::NOT_FOUND);
 
         // publishedにすると公開ルックアップで見えるようになる。
         let resp = client
-            .put(format!("/api/pages/{}", page.id))
+            .post("/rs_blog.v1.Pages/Update")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"status": "published"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({"id": page.id}), serde_json::json!({"status": "published"}))).send()
             .await;
         resp.assert_status_is_ok();
 
-        let resp = client.get("/api/pages/by-slug/about").send().await;
+        let resp = client.post("/rs_blog.v1.Pages/GetBySlug").body_json(&jm(serde_json::json!({"slug": "about"}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let found: Page = resp.json().await.value().deserialize();
         assert_eq!(found.title, "About");
 
-        let resp = client.get("/api/pages").header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Pages/List").header("Authorization", format!("Bearer {token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let pages: Vec<Page> = resp.json().await.value().deserialize();
         assert_eq!(pages.len(), 1);
 
-        let resp = client.delete(format!("/api/pages/{}", page.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Pages/Delete").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": page.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
 
-        let resp = client.get("/api/pages/by-slug/about").send().await;
+        let resp = client.post("/rs_blog.v1.Pages/GetBySlug").body_json(&jm(serde_json::json!({"slug": "about"}), serde_json::json!({}))).send().await;
         resp.assert_status(poem::http::StatusCode::NOT_FOUND);
     }
 
@@ -1547,41 +1565,41 @@ mod tests {
         let client = TestClient::new(app_for(state));
 
         let resp = client
-            .post("/api/tags")
+            .post("/rs_blog.v1.Tags/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"name": "Rust", "slug": "rust"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"name": "Rust", "slug": "rust"}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
         let tag: Tag = resp.json().await.value().deserialize();
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "Tagged", "body": "...", "tags": [tag.id]}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "Tagged", "body": "...", "tags": [tag.id]}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
         let resp = client
-            .post("/api/posts")
+            .post("/rs_blog.v1.Posts/Create")
             .header("Authorization", format!("Bearer {token}"))
-            .body_json(&serde_json::json!({"title": "Untagged", "body": "..."}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"title": "Untagged", "body": "..."}))).send()
             .await;
-        resp.assert_status(poem::http::StatusCode::CREATED);
+        resp.assert_status(poem::http::StatusCode::OK);
 
         let resp = client
-            .get(format!("/api/posts?tag={}", tag.id))
+            .post("/rs_blog.v1.Posts/List")
             .header("Authorization", format!("Bearer {token}"))
-            .send()
+            .body_json(&jm(serde_json::json!({"tag": tag.id.to_string()}), serde_json::json!({}))).send()
             .await;
         resp.assert_status_is_ok();
         let posts: Vec<Post> = resp.json().await.value().deserialize();
         assert_eq!(posts.len(), 1);
         assert_eq!(posts[0].title, "Tagged");
 
-        let resp = client.delete(format!("/api/tags/{}", tag.id)).header("Authorization", format!("Bearer {token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Tags/Delete").header("Authorization", format!("Bearer {token}")).body_json(&jm(serde_json::json!({"id": tag.id}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
     }
 
@@ -1591,21 +1609,21 @@ mod tests {
         let state = test_state(dir.path());
         let client = TestClient::new(app_for(state));
 
-        let resp = client.get("/api/auth/login-mode").send().await;
+        let resp = client.post("/rs_blog.v1.Auth/GetLoginMode").body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let value: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(value["login_mode"], "otp");
 
         // 未ログインでの変更は拒否される。
-        let resp = client.post("/api/auth/login-mode").body_json(&serde_json::json!({"login_mode": "qr"})).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/SetLoginMode").body_json(&jm(serde_json::json!({}), serde_json::json!({"login_mode": "qr"}))).send().await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
 
         // 不正な値は拒否される。
         let resp = client
-            .post("/api/auth/login-mode")
+            .post("/rs_blog.v1.Auth/SetLoginMode")
             .header("Authorization", "Bearer bogus")
-            .body_json(&serde_json::json!({"login_mode": "password"}))
-            .send()
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"login_mode": "password"}))).send()
             .await;
         resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
     }
@@ -1620,41 +1638,41 @@ mod tests {
 
         // qrモードへ切り替えた後は、通常のOTPログイン(request-otp)ではなく
         // QR単体ログインを使う——start自体は未ログインで呼べる。
-        let resp = client.post("/api/auth/qr-login/start").send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginStart").body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
         let started: serde_json::Value = resp.json().await.value().deserialize();
         let id = started["id"].as_str().unwrap().to_string();
 
-        let resp = client.get(format!("/api/auth/qr-login/whoami?id={id}")).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginWhoami").body_json(&jm(serde_json::json!({"id": id.to_string()}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let who: serde_json::Value = resp.json().await.value().deserialize();
         assert!(who["masked_email"].as_str().unwrap().contains("***"));
 
-        let resp = client.get(format!("/api/auth/qr-login/status?id={id}")).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginStatus").body_json(&jm(serde_json::json!({"id": id.to_string()}), serde_json::json!({}))).send().await;
         resp.assert_status_is_ok();
         let status: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(status["confirmed"], false);
 
         // qr-confirm.html自身が読み込み時に自動で呼ぶ操作を模す。
-        let resp = client.post("/api/auth/qr-login/confirm").body_json(&serde_json::json!({"id": id})).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginConfirm").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": id}))).send().await;
         resp.assert_status_is_ok();
 
-        let resp = client.get(format!("/api/auth/qr-login/status?id={id}")).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginStatus").body_json(&jm(serde_json::json!({"id": id.to_string()}), serde_json::json!({}))).send().await;
         let status: serde_json::Value = resp.json().await.value().deserialize();
         assert_eq!(status["confirmed"], true);
 
-        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": id})).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginFinish").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": id}))).send().await;
         resp.assert_status_is_ok();
         let finished: serde_json::Value = resp.json().await.value().deserialize();
         let session_token = finished["token"].as_str().unwrap().to_string();
         assert_ne!(session_token, token, "QRログイン発行のトークンはOTPログインのものとは別物");
 
         // 発行されたトークンで実際に保護APIへアクセスできる。
-        let resp = client.get("/api/posts").header("Authorization", format!("Bearer {session_token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Posts/List").header("Authorization", format!("Bearer {session_token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
 
         // QRセッションは使い捨てのため、二重finishは拒否される。
-        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": id})).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginFinish").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": id}))).send().await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
     }
 
@@ -1664,7 +1682,7 @@ mod tests {
         let state = test_state(dir.path());
         let client = TestClient::new(app_for(state));
         // 既定はotpモードのため、QR単体ログインは拒否される。
-        let resp = client.post("/api/auth/qr-login/start").send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginStart").body_json(&serde_json::json!({})).send().await;
         resp.assert_status(poem::http::StatusCode::FORBIDDEN);
     }
 
@@ -1677,9 +1695,9 @@ mod tests {
 
         let auth::RequestOtpOutcome::Issued(code) = state.auth.request_otp(&state.admin_email);
         let resp = client
-            .post("/api/auth/verify-otp")
-            .body_json(&serde_json::json!({"email": state.admin_email, "code": code}))
-            .send()
+            .post("/rs_blog.v1.Auth/VerifyOtp")
+            
+            .body_json(&jm(serde_json::json!({}), serde_json::json!({"email": state.admin_email, "code": code}))).send()
             .await;
         resp.assert_status_is_ok();
         let verified: serde_json::Value = resp.json().await.value().deserialize();
@@ -1687,14 +1705,14 @@ mod tests {
         let qr_id = verified["qr_id"].as_str().unwrap().to_string();
 
         // QR確認前は保護APIへ到達するトークンをまだ持っていない。
-        let resp = client.post("/api/auth/qr-login/confirm").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginConfirm").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": qr_id}))).send().await;
         resp.assert_status_is_ok();
-        let resp = client.post("/api/auth/qr-login/finish").body_json(&serde_json::json!({"id": qr_id})).send().await;
+        let resp = client.post("/rs_blog.v1.Auth/QrLoginFinish").body_json(&jm(serde_json::json!({}), serde_json::json!({"id": qr_id}))).send().await;
         resp.assert_status_is_ok();
         let finished: serde_json::Value = resp.json().await.value().deserialize();
         let session_token = finished["token"].as_str().unwrap().to_string();
 
-        let resp = client.get("/api/posts").header("Authorization", format!("Bearer {session_token}")).send().await;
+        let resp = client.post("/rs_blog.v1.Posts/List").header("Authorization", format!("Bearer {session_token}")).body_json(&serde_json::json!({})).send().await;
         resp.assert_status_is_ok();
     }
 
@@ -1707,7 +1725,54 @@ mod tests {
         resp.assert_status_is_ok();
         let body = resp.0.into_body().into_string().await.unwrap();
         assert!(body.contains("RS-Blog"));
-        assert!(body.contains("qr-login/confirm"));
+        assert!(body.contains("Auth/QrLoginConfirm"));
+    }
+
+    // ---- Connect 入口の試験(REST全廃: 旧 /api/... は 404、認証なし401・不正入力400・重複キー400・正常200) ----
+
+    #[tokio::test]
+    async fn legacy_rest_routes_are_gone_and_connect_errors_have_code_and_message() {
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let token = admin_token(&state).await;
+        let client = TestClient::new(app_for(state));
+
+        for (m, p) in [("get", "/api/posts"), ("post", "/api/posts"), ("post", "/api/auth/verify-otp"), ("get", "/api/auth/login-mode")] {
+            let resp = if m == "get" { client.get(p).send().await } else { client.post(p).body_json(&serde_json::json!({})).send().await };
+            resp.assert_status(poem::http::StatusCode::NOT_FOUND);
+        }
+
+        // 認証なし → 401 + {"code","message"}
+        let resp = client.post("/rs_blog.v1.Posts/Create").body_json(&serde_json::json!({"title": "x", "body": "y"})).send().await;
+        resp.assert_status(poem::http::StatusCode::UNAUTHORIZED);
+        let v: serde_json::Value = resp.json().await.value().deserialize();
+        assert_eq!(v["code"], "unauthenticated");
+        assert!(v["message"].is_string());
+
+        // content-type が JSON でない → 415
+        let resp = client.post("/rs_blog.v1.Posts/Create").content_type("text/plain").body("hi").send().await;
+        resp.assert_status(poem::http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        // 壊れた JSON → 400、重複キー → 400、オブジェクトでない → 400
+        for bad in ["{not json", r#"{"a":1,"a":2}"#, "[1,2]"] {
+            let resp = client
+                .post("/rs_blog.v1.Posts/Create")
+                .header("Authorization", format!("Bearer {token}"))
+                .content_type("application/json")
+                .body(bad)
+                .send()
+                .await;
+            resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+            let v: serde_json::Value = resp.json().await.value().deserialize();
+            assert_eq!(v["code"], "invalid_argument");
+        }
+
+        // パス引数に当たる欄が無い → 400
+        let resp = client.post("/rs_blog.v1.Posts/Get").header("Authorization", format!("Bearer {token}")).body_json(&serde_json::json!({})).send().await;
+        resp.assert_status(poem::http::StatusCode::BAD_REQUEST);
+
+        // GET は受けない(POST のみ)
+        client.get("/rs_blog.v1.Posts/List").send().await.assert_status(poem::http::StatusCode::METHOD_NOT_ALLOWED);
     }
 
     fn tempdir() -> TempDir {
