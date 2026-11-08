@@ -27,7 +27,7 @@
 //! 場合、その人もURLを開けてしまう(有効期限3分+1回限りの消費で
 //! 被害範囲を抑える設計)。
 
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -61,17 +61,17 @@ fn mask_email(email: &str) -> String {
 fn hash(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn generate_otp() -> String {
-    let mut rng = rand::thread_rng();
-    format!("{:06}", rng.gen_range(0..1_000_000u32))
+    let mut rng = rand::rng();
+    format!("{:06}", rng.random_range(0..1_000_000u32))
 }
 
 fn generate_token() -> String {
-    let mut rng = rand::thread_rng();
-    let bytes: [u8; 24] = rng.gen();
+    let mut rng = rand::rng();
+    let bytes: [u8; 24] = rng.random();
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 

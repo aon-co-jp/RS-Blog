@@ -1802,9 +1802,9 @@ mod tests {
     }
 
     fn generate_suffix() -> String {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        let bytes: [u8; 8] = rng.gen();
+        use rand::RngExt;
+        let mut rng = rand::rng();
+        let bytes: [u8; 8] = rng.random();
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 }
