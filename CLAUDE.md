@@ -1,0 +1,438 @@
+# 開発方針＆開発環境ルール(RS-Blog)
+
+作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
+`CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
+GitHubリポジトリ: [aon-co-jp/RS-Blog](https://github.com/aon-co-jp/RS-Blog)。
+VPS上の作業パス: `/root/repository/RS-Blog`(2026-08-28、VPSディレクトリ
+構成整理によりリポジトリは`/root/repository/`配下へ移動。旧パス
+`/root/RS-Blog`はシンボリックリンクとして残しており、systemdサービス等
+既存の参照はそのまま機能する)。
+
+## このプロジェクトの役割
+
+[WordPress](https://wordpress.org/)(PHP製)の、ハイスピード・
+ハイセキュリティ・省メモリなRust+[poem](https://github.com/poem-web/poem)
+(RPoem)版を目指す。`RS-Git`(Gitea相当)・`RJSON`(JSON処理)と同じ
+`aon-co-jp`エコシステムの一員。
+
+> ⚠️ **正直な開示**: 2026-07-21時点でコード未着手(このCLAUDE.mdのみの
+> 状態)。実装が追いつくまでは「WordPressの代替品」を名乗らず、
+> 進捗をこのHANDOFFに正直に記録する。
+
+## 着手時に踏襲すべき既存プロジェクトの設計方針
+
+- **`RS-Git`**(git smart HTTP・OTPログイン・アクセス制御・容量ベースの
+  自動判定)を先行実装として参照。「正直な開示」「段階的実装」
+  「型チェックだけで完了と報告しない・実機検証必須」の3方針は共通。
+- **`open-easy-web`**(PHP実行対応の自己学習AI判定、`php_detector.rs`)
+  は関連する既存実装として参照価値あり——WordPressはPHP製のため、
+  PHP実行環境との連携・非依存化の両面を検討する際の先行事例になる。
+
+## WordPressの主要機能(着手時の優先順位付けの参考)
+
+- 投稿・固定ページ・カスタム投稿タイプ
+- テーマ・ウィジェット
+- プラグイン機構(拡張性)
+- ユーザー・ロール・権限管理
+- メディアライブラリ
+- REST API
+
+## 方針決定事項(2026-07-21、ユーザー確認済み)
+
+- **着手順番**: `RS-Chiketto`・`RS-Blog`・`RS-EC`は同時並行ではなく
+  **1つずつ順番に、`RS-Git`と同じ深さまで作り込んでから次へ**進める。
+  どれを最初にするかは次回セッション冒頭で決定。
+- **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB)を採用、
+  3プロジェクトで統一する。加えて**PostgreSQLとのDUAL DATABASE構成も
+  可能にする**(ユーザー指示、2026-07-21追記)——`open-runo`/RPoemの
+  「4層4重」DUAL DB思想と同じ方針、設定で切り替え可能にする。
+- **「分身の術」構成でDB層を共有する**(ユーザー指示、2026-07-21追記):
+  `open-web-server`・`aruaru-llm`・RPoem/RCosmoと同じ設計思想により、
+  `aruaru-db`/PostgreSQL接続は**1インスタンスを複数ドメインが共有**し、
+  ドメイン追加のたびに個別インストールは不要とする。実装は`aruaru-llm`
+  の`src/tenants.rs`(`TenantRegistry`)と同じパターン。**管理は
+  `open-easy-web`側から行う**(`appserver_registration.rs`に
+  `RS-Blog`用の`AppServerKind`variantを追加する形)。
+  **非同期・マルチCPU/マルチコア/マルチスレッド対応**: `#[tokio::main]`
+  は既定の`multi_thread`フレーバー、CPU負荷の高い処理は`rayon`で
+  全論理コアへ並列ディスパッチする。
+- **PHPプラグイン互換性**: **既存のPHPプラグイン資産を実行できる
+  互換レイヤも目指す**(機能相当の新規実装だけでは終わらせない、
+  ユーザー指示)。難易度が非常に高いことは認識した上で、`open-easy-web`
+  の`php_detector.rs`(PHP実行環境検知)を参考に、まずPHP実行環境との
+  連携方式(埋め込みPHPインタプリタ呼び出し等)の技術調査から始める。
+
+## HANDOFF
+
+- **2026-08-28 ログイン4択方式の横展開: QR確認ログイン+`login_mode`管理API+
+  `qr-confirm.html`を追加(open-english/open-easy-webと同じパターン)**:
+  `F:\runo\PORTING.md`の「ログイン方式4択…横展開チェックポイント」節の
+  対応、残り6リポジトリのうち最初の1つとして着手。
+  1. **「パスワード無し」モードは実装しなかった(正直な設計判断)**:
+     RS-Blogは公開ブログの管理者アカウントであり、侵害されると投稿の
+     改ざん・削除が可能——open-easy-web(VPS/サイト管理)と同じ理由で、
+     コンテンツ完全性に関わる重要操作を扱うため認証の完全省略は
+     不適切と判断した。実装したのは`otp`(既定、既存のメールOTP単体)・
+     `qr`(事前のOTP検証なしでQR撮影のみ)・`otp_qr`(OTP検証成功後、
+     QR確認を第二要素として要求する真の2FA)の3方式のみ。
+  2. **`src/auth.rs`**: `login_mode`(`Mutex<String>`、既定`"otp"`)・
+     `qr_logins`(QRログインセッション、3分TTL・1回限り)を`AuthStore`へ
+     追加。`start_qr_login`/`qr_login_masked_email`/`confirm_qr_login`/
+     `qr_login_status`/`finish_qr_login`(open-english/open-easy-webと
+     同じ設計)。RS-Blogは登録アカウント制を持たず単一の管理者
+     (`RSBLOG_ADMIN_EMAIL`)のみのため、open-easy-webの「TOTP登録済み
+     アカウントのみqr可」という前提条件は不要——QR単体ログインは
+     事前準備なしに常時利用可能。
+  3. **`src/main.rs`**: `GET/POST /api/auth/login-mode`(GETは未ログイン
+     可、POSTは管理者セッション必須——最初の1回は既定の`otp`でログイン
+     してから切り替える)・`POST /api/auth/qr-login/{start,confirm,
+     finish}`・`GET /api/auth/qr-login/{whoami,status}`・
+     `GET /qr-confirm.html`(スマホ/タブレット/WEBカメラで開くと
+     ボタン操作なしに自動承認される単体完結ページ、open-english版を
+     RS-Blogブランディングへ差し替えたもの)。既存の`verify_otp`
+     ハンドラを拡張し、`login_mode`が`otp_qr`の場合はセッションを
+     即発行せず`{"qr_required": true, "qr_id": ...}`を返すようにした。
+  4. **実機検証(型チェック・ビルド成功だけで完了と報告しない方針の
+     徹底)**: `cargo build`成功(警告0件)。`cargo test`
+     **26件全green**(新規11件: `auth::tests`5件+`tests::`6件、
+     既存15件から回帰なし)。新規6件のうち3件は実HTTP経由の統合テスト
+     (`qr_only_login_full_flow_over_real_http`——start→whoami→status→
+     confirm→status→finish→セッション発行→保護API到達→二重finish拒否
+     まで一気通貫、`otp_qr_mode_requires_qr_confirmation_as_second_
+     factor_over_real_http`——OTP検証→QR確認→finish→保護API到達、
+     `qr_login_start_is_rejected_when_login_mode_is_otp`)。さらに
+     実バイナリを起動し、curl経由で`GET /`(200)・
+     `GET /api/auth/login-mode`(`{"login_mode":"otp"}`)・
+     `POST /api/auth/qr-login/start`(otpモード時403)・
+     `GET /qr-confirm.html`(RS-Blogブランディング付きHTML)・
+     未ログインでの`POST /api/auth/login-mode`(401)・SMTP未設定の
+     `POST /api/auth/request-otp`(503、既存の正直な劣化動作)を
+     実HTTPで確認した。
+  5. **正直な開示・未実施**: この開発機にSMTPサーバーが用意できない
+     ため、実際のメール送信を経由した`otp_qr`モードのフルE2E
+     (実メール受信→OTP入力→QR確認→ログイン)はcurlでは検証していない
+     (`cargo test`内の`TestClient`による実HTTP相当の統合テストで代替、
+     既存のOTP関連検証と同じ制約)。実際のQRコード画像生成・スマホ実機
+     でのカメラ撮影によるURL起動もこのパスでは未検証(QRは単に短命URLを
+     埋め込むだけの設計のため、URL自体の起動確認は`qr-confirm.html`の
+     動作確認で代替——実際にQR画像へエンコードする処理はクライアント側
+     〈将来のブラウザUI〉の実装範囲であり、v0.1.0時点のRS-Blogには
+     まだブラウザUI自体が無い〈JSON APIのみ〉ため対象外)。
+  - 次にすべきこと: (1) 残り5リポジトリ(RS-EC/RS-Ops/open-gitea/
+    open-redmine/rs-sync)への同様の横展開、(2) 実SMTP環境での
+    `otp_qr`フルE2E検証、(3) RS-Blog自体のブラウザUI実装時に、QRコード
+    画像のレンダリング(`qrcode`crate等)を追加する。
+
+- **2026-07-22 実バイナリ起動による実HTTPスモークテストを実施(既存の
+  「未実施」だった項目の解消)**: `cargo build`(警告0件)・`cargo test`
+  (**16件全green**、前回記録の11件から投稿以外にカテゴリ/タグ/固定ページ/
+  コメントモデレーションのテストが増えていた)を確認した上で、
+  `target/debug/rs-blog.exe`を`RSBLOG_PORT=8199`/一時`RSBLOG_DATA_DIR`で
+  実際に起動し、curlで以下を実HTTP確認した: (1) `GET /`が200・本文に
+  `RS-Blog`の文字列を含む、(2) `GET /healthz`が`ok`、(3) 未ログインでの
+  `GET /api/posts`が401、(4) `POST /api/auth/request-otp`が
+  (`RSBLOG_SMTP_*`未設定のサンドボックスのため)503——ハンドラの
+  `state.smtp.is_none()`分岐が実際にこの通り応答することを実機で確認。
+  **正直な開示・残る検証の限界**: このサンドボックスに実SMTPサーバー
+  (`RSBLOG_SMTP_*`)が用意できないため、OTPメール実送信→`verify-otp`→
+  トークン取得→`POST/GET/PUT/DELETE /api/posts`の認証つき一気通貫は
+  今回も実機curlでは未実施のまま(`cargo test`内の`TestClient`による
+  インメモリE2E、5件+新規カテゴリ/タグ/固定ページ/コメント関連が
+  この部分を代替検証している)。次回、実SMTP環境(VPS等)が使える
+  セッションで、OTP発行→受信→`verify-otp`→Bearerトークンでの投稿CRUDを
+  実際のメール受信込みでcurl検証すること。
+  検証後、作業ツリーはクリーン(コミット対象の変更なし)だったため、
+  このHANDOFF更新のみをコミットしてpushする。
+
+- **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
+  VPS空フォルダ・ローカル作業フォルダを用意。次回、`RS-Git`と同じ構成
+  (`Cargo.toml`+`poem`)でのブートストラップに着手する。
+  - 次にすべきこと: (1) 3プロジェクトのうちどれから着手するか決定、
+    (2) WordPressの機能のうちMVP範囲の選定(投稿+固定ページの表示
+    のみ、等)、(3) PHPプラグイン互換レイヤの技術調査(embed-PHP系
+    クレートの調査等)、(4) `aruaru-db`との接続方式の設計。
+
+- **2026-07-21(続き) v0.1.0ブートストラップ完了: 投稿CRUD+OTP認証**
+  (`RS-Chiketto`のv0.1.0ブートストラップと全く同じパターンを踏襲):
+  1. `RS-Chiketto`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTP
+     ログイン機構、環境変数名のみ`RSBLOG_*`に変更)。v0.1.0時点では
+     管理者アカウント(`RSBLOG_ADMIN_EMAIL`)のみログイン可能(`RS-Git`/
+     `RS-Chiketto`にある登録アカウント制・アクセス制御の細分化は
+     まだ移植していない、次回以降の増分)。
+  2. 投稿(Post)のCRUD: `POST/GET /api/posts`・
+     `GET/PUT/DELETE /api/posts/:id`。ステータスは`draft`/`published`の
+     2値。永続化はJSONファイル(`RSBLOG_DATA_DIR/posts.json`、`aruaru-db`/
+     PostgreSQL DUAL DB構成への移行はまだ未着手——今回は動くMVPを優先)。
+     `RS-Chiketto`のチケットCRUDには無い`DELETE`ハンドラも追加した。
+  3. **検証**: `cargo build`は警告0件で成功(2m28s)。`cargo test`は
+     **11件全green**(`auth::tests`が6件、投稿CRUDのハンドラテストが
+     `poem::test::TestClient`を使って5件——未ログインでの`GET /api/posts`
+     が`401`になること、投稿の作成→一覧→取得→更新(ステータス変更)→
+     削除→削除後の`404`確認、空タイトルでの作成が`400`になること、を
+     それぞれ検証)。テストは`poem`の`test`featureを`dev-dependencies`に
+     追加して実現(`RS-Chiketto`側のCargo.tomlには無かった追加、
+     `poem::test`モジュールがデフォルトでは無効なため)。
+     **注意**: 実バイナリを起動してのcurlベースの実HTTPスモークテスト
+     (`RS-Chiketto`のHANDOFFにある「未ログインで401→OTPログイン→
+     作成201→一覧→更新」の一連)は今回**未実施**——`cargo test`内の
+     `TestClient`によるインメモリE2Eテストで代替した。実SMTP環境が
+     手元に無かったため、次回実機(VPS等)でのデプロイ時に必ず
+     curlでの実HTTPスモークテストを行うこと。
+  4. `install.sh`/`install.ps1`/`.github/workflows/release.yml`は
+     `RS-Chiketto`版をそのままリネーム移植(`chiketto`→`blog`、
+     `RSCHIKETTO`→`RSBLOG`、ポートは`8101`)。muslターゲット
+     (`x86_64-unknown-linux-musl`)による静的リンクLinuxバイナリ配布も
+     同じ方針。
+  5. `README.md`に「現状」セクションを追加(既存のマーケティング文・
+     開発開始日は変更せず)。
+  - **次にすべきこと**: (1) 実機(VPS)でのcurlベース実HTTPスモーク
+    テスト(OTPメール実送信含む)、(2) `RS-Git`にある登録アカウント制・
+    アクセス制御(閲覧/編集の個別許可)の移植、(3) 固定ページ・
+    カスタム投稿タイプ・テーマ・ウィジェット等の追加機能、
+    (4) PHPプラグイン互換レイヤの技術調査、(5) `aruaru-db`/PostgreSQL
+    DUAL DB構成への移行(現状はJSONファイル永続化)、(6) GitHubへの
+    初回push・VPSデプロイ(`runo.tokyo/blog`、ポート`8101`)。
+
+
+## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
+
+`RS-Chiketto`・`RS-Blog`・`RS-EC`(この3プロジェクト自身、着手順は
+「1つずつ順番に」の方針のまま)に加えて、以下の既存プロジェクトを
+**同時に開発を進め、完成度を高めていく**:
+
+- [open-raid-z](https://github.com/aon-co-jp/open-raid-z) — 開発ルールの
+  正本。3プロジェクトの`CLAUDE.md`もここの記述と同期を取る。
+- [aruaru-db](https://github.com/aon-co-jp/aruaru-db) — ZFS互換・ACID
+  互換のRust製DB。3プロジェクトが採用する「分身の術」DB共有構成の実体。
+- [open-cuda](https://github.com/aon-co-jp/open-cuda) — GPU抽象化・
+  GEMM/Attention計算基盤(`opencuda-blas`/`opencuda-bert`)。
+- [aruaru-llm](https://github.com/aon-co-jp/aruaru-llm) — 上記
+  `open-cuda`を使った実装例(bag-of-words→文埋め込みベースの意図分類へ
+  移行済み)。3プロジェクトが将来AI機能を持つ際の先行実装として参照。
+- [open-web-server](https://github.com/aon-co-jp/open-web-server) —
+  「分身の術」構成(1インスタンスを複数ドメインが共有)の基盤実装、
+  Nginx/Apacheハイブリッド仕様のWebサーバー。
+- [open-cosmo](https://github.com/aon-co-jp/open-cosmo) — 関連する
+  Webサーバー/フロントエンド基盤(詳細は同リポジトリのCLAUDE.md参照)。
+- [RPoem](https://github.com/aon-co-jp/RPoem) — アプリケーションサーバー
+  層(旧poem-cosmo-tauri)。`open-raid-z`とVersionlessAPIによる
+  バージョンレス運用、`aruaru-db`とのDUAL DATABASE構成の先行実装。
+
+- Python製AIライブラリのRust移植ハイブリッド/トライブリッド版
+  (マーケティング調査での1〜6位、vLLM/Transformers/NumPy/PyTorch互換/
+  scikit-learn/Whisper相当の良いとこ取り)——**Rustを基本とし、必要なら
+  `RPoem`(アプリケーションサーバー層)も併用する**(ユーザー指示、
+  2026-07-21追記)。`open-cuda`ワークスペース内の`opencuda-blas`
+  (NumPy相当)・`opencuda-bert`(Transformers推論パス相当、実装済み)が
+  このトライブリッド化の実体。今後の`opencuda-llm`(vLLM相当、生成
+  デコーダ追加時)を、必要であれば`RPoem`上のHTTPサービスとして
+  提供することも視野に入れる。
+
+**理由**: これらは3プロジェクトが実際に依存する基盤コンポーネント
+(DB層・GPU計算基盤・「分身の術」共有構成・アプリケーションサーバー層)
+であり、基盤側の完成を待ってから3プロジェクトに着手するのではなく、
+実際に統合しながら並行して育て、エコシステム全体の完成度を高めていく
+方針とする。
+
+## 公開先・配布方針(2026-07-21、ユーザー確認済み、着手時に反映すること)
+
+- **公開パス**: `runo.tokyo/blog`(`RS-Git`の`runo.tokyo/rgit`・
+  `RS-Chiketto`の`runo.tokyo/chiketto`と同じパス方式、VPS上の
+  ポートは`8101`)。
+- **クロスプラットフォーム配布**: AlmaLinux・Ubuntu・Debian・Fedora・
+  RHEL等の主要Linuxディストリ、Windows・Windows Server向けに、
+  インストーラー付きのビルド済みバイナリをGitHub Releasesで配布する
+  (ユーザー指示、`RS-Chiketto`の
+  `.github/workflows/release.yml`・`install.sh`・`install.ps1`を
+  雛形として踏襲すること)。
+
+## HANDOFF追記(2026-07-31) インストーラーの電源プロファイル選択機能(未実装、エコシステム標準方針として記録)
+
+`open-raid-z`のCLAUDE.md(全リポジトリ共通の設計思想セクション)に、
+インストーラー(`install.sh`/`install.ps1`等)実行時に以下3つの電源
+プロファイルを選択させる標準方針を追記した(ユーザー指示、2026-07-31):
+
+1. **省電力(Power-saving)**: CPU使用率・ポーリング間隔を抑えた低負荷設定。
+2. **省メモリ(Low-memory)**: メモリ確保量・キャッシュサイズを抑えた設定。
+3. **常時電源接続(Always-on)**: 上記の抑制を行わないフル性能設定。
+   **この場合のみ**ハードウェアアクセラレータ(NPU/GPU)のサポートを
+   自動検出・自動有効化する(`open-cuda`の`GpuDevice`抽象化を利用)。
+
+**正直な開示**: このリポジトリのインストーラーへの実装はまだ未着手。
+実装時は`open-raid-z/CLAUDE.md`の該当節、および先行実装予定の
+`open-redmine/CLAUDE.md`を参照し、`open-cuda`側のGPU/NPUベンダー検出
+ロジックを再利用すること(車輪の再発明を避ける)。
+- 次にすべきこと: このリポジトリの`install.sh`/`install.ps1`に上記3
+  プロファイルの選択機能を追加する。
+
+## API 方針: REST 全廃・gRPC / Connect へ (2026-11-04)
+
+### 日本語
+- **REST は全廃する。新しい API は REST で作らない。** ブラウザや `curl` から呼ぶ API は **Connect の単純呼び出し**(`POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON)、サービス間は **gRPC / gRPC-web**(RPoem の管理API `open_runo.admin.v1.Admin` と同じ流儀)。ストリーミングは、必要になってから。
+- **既存の REST は、触るときに順に移す。** 移したら旧 REST の経路は消す。移行が終わるまで残るが、**新規には追加しない**。
+- **JSON は RS-JSON に統一**する(読み込みは `from_str_secure` / `parse_secure` でサイズ・深さ・重複キーの上限つき、書き出しは `rust_json::fast`)。ブラウザの WASM に `prost` は入れない(サイズが増えるため)。
+- **例外(自分たちの API ではなく、相手の規格が決めているもの)**: ACME、OAuth/OIDC のコールバック、第三者(GitHub など)からの Webhook、ヘルスチェック、静的ファイル配信、OTLP など。これらは規格どおりの HTTP を受ける。
+- 参考実装: `RPoem`(`open_runo.admin.v1.Admin`)、`open-easy-web`(`server/src/connect.rs`、`proto/open_easy_web/admin/v1/admin.proto`)。
+- ※ このリポジトリのコードが既に方針どおりかどうかは、各リポジトリの現状による。この節は方針の記録であり、コードの変更を意味しない。
+
+### English
+- **REST is being abolished. New APIs are not built as REST.** APIs called from browsers or `curl` use **Connect unary calls** (`POST /<package>.<Service>/<Method>`, `content-type: application/json`, JSON body); service-to-service calls use **gRPC / gRPC-web** (the same style as RPoem's admin API `open_runo.admin.v1.Admin`). Streaming only when it is actually needed.
+- **Existing REST endpoints are migrated one by one, when they are touched.** The old REST route is removed once migrated. Until migration is finished they remain, but **no new ones are added**.
+- **JSON is unified on RS-JSON**: reading with `from_str_secure` / `parse_secure` (size, depth and duplicate-key limits), writing with `rust_json::fast`. `prost` is not put into browser WASM (it would grow the binary).
+- **Exceptions (shapes dictated by someone else's standard, not our own API)**: ACME, OAuth/OIDC callbacks, webhooks from third parties (e.g. GitHub), health checks, static file serving, OTLP, and so on. These accept plain HTTP as the standard requires.
+- Reference implementations: `RPoem` (`open_runo.admin.v1.Admin`) and `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Note: whether the code in a given repository already follows this policy depends on that repository. This section records the policy; it does not mean the code has been changed.
+
+### Deutsch (KI-Übersetzung, redaktionell überarbeitet; noch nicht von Muttersprachlern geprüft)
+- **REST wird vollständig abgeschafft; neue APIs entstehen nicht mehr als REST.** APIs, die aus dem Browser oder per `curl` aufgerufen werden, verwenden **unäre Connect-Aufrufe** (`POST /<Paket>.<Service>/<Methode>`, `content-type: application/json`, JSON-Body). Zwischen Diensten kommen **gRPC bzw. gRPC-web** zum Einsatz, im selben Stil wie die Admin-API von RPoem (`open_runo.admin.v1.Admin`). Streaming wird erst ergänzt, wenn es tatsächlich gebraucht wird.
+- **Bestehende REST-Endpunkte werden schrittweise umgestellt, und zwar immer dann, wenn man ohnehin an ihnen arbeitet.** Sobald ein Endpunkt umgestellt ist, wird die alte REST-Route entfernt. Bis zum Abschluss der Migration bleiben die übrigen bestehen, es werden aber **keine neuen mehr hinzugefügt**.
+- **JSON wird einheitlich über RS-JSON verarbeitet**: Gelesen wird mit `from_str_secure` bzw. `parse_secure` (mit Obergrenzen für Größe, Verschachtelungstiefe und doppelte Schlüssel), geschrieben mit `rust_json::fast`. `prost` wird nicht in das Browser-WASM aufgenommen, da es die Datei vergrößern würde.
+- **Ausnahmen (Schnittstellen, deren Form ein fremder Standard vorgibt und die nicht zu unserer eigenen API gehören)**: ACME, OAuth/OIDC-Callbacks, Webhooks von Drittanbietern (z. B. GitHub), Health-Checks, die Auslieferung statischer Dateien, OTLP und Ähnliches. Diese nehmen, wie vom jeweiligen Standard verlangt, gewöhnliches HTTP entgegen.
+- Referenzimplementierungen: `RPoem` (`open_runo.admin.v1.Admin`) und `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Hinweis: Ob der Code eines einzelnen Repositorys diese Richtlinie bereits erfüllt, hängt vom jeweiligen Repository ab. Dieser Abschnitt dokumentiert lediglich die Richtlinie; er besagt nicht, dass der Code schon angepasst wurde.
+
+### Русский (перевод выполнен с помощью ИИ и отредактирован; носителями языка пока не проверен)
+- **От REST мы полностью отказываемся; новые API больше не создаются в стиле REST.** API, к которым обращаются из браузера или через `curl`, используют **унарные вызовы Connect** (`POST /<пакет>.<Service>/<Method>`, `content-type: application/json`, тело запроса — JSON). Для взаимодействия между сервисами применяются **gRPC и gRPC-web** — в том же стиле, что и административный API RPoem (`open_runo.admin.v1.Admin`). Потоковая передача данных добавляется лишь тогда, когда в ней действительно возникает необходимость.
+- **Существующие REST-эндпоинты переводятся поэтапно — по мере того, как с ними приходится работать.** После перевода старый REST-маршрут удаляется. Пока миграция не завершена, оставшиеся эндпоинты сохраняются, но **новые не добавляются**.
+- **Работа с JSON унифицирована на основе RS-JSON**: чтение — через `from_str_secure` или `parse_secure` (с ограничениями на размер, глубину вложенности и повторяющиеся ключи), запись — через `rust_json::fast`. `prost` в браузерный WASM не включается, поскольку это увеличило бы размер файла.
+- **Исключения (интерфейсы, форму которых определяет чужой стандарт, а не наш собственный API)**: ACME, обратные вызовы OAuth/OIDC, вебхуки сторонних сервисов (например, GitHub), проверки работоспособности, раздача статических файлов, OTLP и тому подобное. Такие интерфейсы принимают обычный HTTP, как того требует соответствующий стандарт.
+- Эталонные реализации: `RPoem` (`open_runo.admin.v1.Admin`) и `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Примечание: соответствует ли код конкретного репозитория этой политике, зависит от самого репозитория. Данный раздел лишь фиксирует политику и не означает, что код уже изменён.
+
+## API 方針の補足: 用語の整理と使い分け (2026-11-04)
+
+### 日本語
+**1つに統一するものではなく、別の層の話です。** 「REST の代わり」になるのは Connect・gRPC・GraphQL だけで、WASM は画面を作る技術です。
+
+| 用語 | 何か | REST の代わりか |
+|---|---|---|
+| REST | URL と HTTP メソッドで操作を表す API の作り方 | 全廃する側 |
+| **Connect** | `POST /サービス名/メソッド名` に JSON を送る形式。`curl` でもブラウザの `fetch` でも呼べる | はい(**採用**) |
+| **gRPC** | 同じ「サービス/メソッド」の考え方を、バイナリ(protobuf)と HTTP/2 で行う形式。速く、ストリーミングも得意 | はい(**サービス同士に採用**) |
+| gRPC-web | gRPC のブラウザ向けの変形版 | はい(必要なら) |
+| GraphQL | 欲しい項目を問い合わせる形式 | 一部だけ(**問い合わせ(読み取り)専用**) |
+| WASM | Rust をブラウザの中で動かす仕組み | いいえ(画面を作る技術) |
+
+- **ブラウザの画面や `curl` から呼ぶ API は Connect**(POST、JSON を RS-JSON で読み書き)。ブラウザの WASM は素の gRPC を話せず、Connect なら `fetch` のままで、`prost` を足さずに済む(画面のサイズも増えない)。
+- **サービス同士の通信(サーバー間、重い処理、ストリーミング)は gRPC。** 多くは Connect で足りるので、ストリーミングが必要になった所だけ gRPC に上げる。
+- **GraphQL は、まとめて問い合わせたいときの読み取り専用。** 書き込み(操作)には使わない。
+- **WASM は画面を作る技術として、そのまま使う。** 画面から呼ぶ API が Connect になっただけ。
+- 外部の規格が形を決めるもの(ACME、OAuth のコールバック、第三者の Webhook、ヘルスチェック、静的ファイル、OTLP)は、規格どおりの HTTP のまま。
+- **迷ったら Connect。**
+
+### English
+**These are not alternatives to unify; they sit at different layers.** Only Connect, gRPC and GraphQL can replace REST; WASM is a way to build the UI.
+
+| Term | What it is | Replaces REST? |
+|---|---|---|
+| REST | API style that expresses operations through URLs and HTTP methods | The thing being abolished |
+| **Connect** | `POST /Service/Method` with a JSON body; callable from `curl` and from a browser `fetch` | Yes (**adopted**) |
+| **gRPC** | The same service/method idea over binary (protobuf) and HTTP/2; fast, good at streaming | Yes (**for service-to-service**) |
+| gRPC-web | A browser-friendly variant of gRPC | Yes (if needed) |
+| GraphQL | A query language: ask for exactly the fields you want | Partly (**read-only queries**) |
+| WASM | Runs Rust inside the browser | No (a UI technology) |
+
+- **APIs called from browser screens or `curl` use Connect** (POST, JSON read and written with RS-JSON). Browser WASM cannot speak plain gRPC; with Connect it stays a `fetch`, and `prost` is not needed (the binary does not grow).
+- **Service-to-service calls (server to server, heavy work, streaming) use gRPC.** Connect is enough in most places; move a call to gRPC only where streaming is actually needed.
+- **GraphQL is read-only**, for queries that gather several pieces of data. It is not used for writes (operations).
+- **WASM stays as the way to build the UI.** The API it calls simply became Connect.
+- Interfaces whose shape an outside standard dictates (ACME, OAuth callbacks, third-party webhooks, health checks, static files, OTLP) stay plain HTTP.
+- **When in doubt, use Connect.**
+
+### Deutsch (KI-Übersetzung, sprachlich überarbeitet; noch nicht von Muttersprachlern geprüft)
+**Es geht nicht darum, eine einzige Technik auszuwählen – die Begriffe liegen auf unterschiedlichen Ebenen.** Als Ersatz für REST kommen nur Connect, gRPC und GraphQL in Frage; WASM dagegen ist eine Technik, mit der die Benutzeroberfläche gebaut wird.
+
+| Begriff | Was ist das? | Ersatz für REST? |
+|---|---|---|
+| REST | Ein API-Stil, bei dem Operationen über URLs und HTTP-Methoden ausgedrückt werden | wird abgeschafft |
+| **Connect** | `POST /Dienst/Methode` mit JSON im Body; aufrufbar mit `curl` ebenso wie mit `fetch` im Browser | ja (**gewählt**) |
+| **gRPC** | Dasselbe Prinzip aus Dienst und Methode, aber über binäres protobuf und HTTP/2; schnell und gut für Streaming geeignet | ja (**zwischen Diensten**) |
+| gRPC-web | Eine für den Browser angepasste Variante von gRPC | ja (bei Bedarf) |
+| GraphQL | Abfragesprache, mit der man genau die benötigten Felder anfordert | teilweise (**nur für lesende Abfragen**) |
+| WASM | Führt Rust-Code direkt im Browser aus | nein (Technik für die Oberfläche) |
+
+- **APIs, die von Browseroberflächen oder per `curl` aufgerufen werden, verwenden Connect** (POST; JSON wird mit RS-JSON gelesen und geschrieben). WASM im Browser kann kein reines gRPC sprechen. Mit Connect bleibt es bei einem gewöhnlichen `fetch`, und `prost` ist nicht nötig – die WASM-Datei wird dadurch nicht größer.
+- **Für die Kommunikation zwischen Diensten (Server zu Server, rechenintensive Aufgaben, Streaming) wird gRPC eingesetzt.** In den meisten Fällen reicht Connect aus; auf gRPC wird nur dort umgestellt, wo Streaming tatsächlich gebraucht wird.
+- **GraphQL dient ausschließlich lesenden Abfragen**, wenn mehrere Informationen gebündelt abgefragt werden sollen. Für Schreibzugriffe (Operationen) wird es nicht verwendet.
+- **WASM bleibt die Technik für die Oberfläche.** Geändert hat sich lediglich, dass die aufgerufene API nun auf Connect beruht.
+- Schnittstellen, deren Form durch einen externen Standard festgelegt ist (ACME, OAuth-Callbacks, Webhooks von Drittanbietern, Health-Checks, statische Dateien, OTLP), bleiben gewöhnliches HTTP.
+- **Im Zweifel: Connect.**
+
+### Русский (перевод выполнен с помощью ИИ и литературно отредактирован; носителями языка пока не проверен)
+**Это не варианты, из которых нужно выбрать один, а технологии разных уровней.** Заменить REST могут только Connect, gRPC и GraphQL; WASM же — это способ создания пользовательского интерфейса.
+
+| Термин | Что это | Заменяет REST? |
+|---|---|---|
+| REST | Стиль построения API, при котором операции выражаются через URL и HTTP-методы | отменяется |
+| **Connect** | `POST /Сервис/Метод` с телом в формате JSON; вызывается как из `curl`, так и из браузерного `fetch` | да (**выбран**) |
+| **gRPC** | Тот же принцип «сервис — метод», но поверх двоичного формата protobuf и HTTP/2; работает быстро и хорошо подходит для потоковой передачи | да (**для связи между сервисами**) |
+| gRPC-web | Адаптированный для браузера вариант gRPC | да (при необходимости) |
+| GraphQL | Язык запросов: клиент запрашивает ровно те поля, которые ему нужны | частично (**только запросы на чтение**) |
+| WASM | Позволяет выполнять код на Rust прямо в браузере | нет (технология для интерфейса) |
+
+- **API, которые вызываются из браузерных интерфейсов или через `curl`, строятся на Connect** (POST; JSON читается и записывается через RS-JSON). Браузерный WASM не умеет работать с «чистым» gRPC. С Connect достаточно обычного `fetch`, а `prost` не требуется — размер WASM-файла не увеличивается.
+- **Для обмена между сервисами (сервер — сервер, ресурсоёмкие задачи, потоковая передача) применяется gRPC.** В большинстве случаев достаточно Connect; на gRPC переходят только там, где потоковая передача действительно необходима.
+- **GraphQL используется только для чтения**, когда нужно получить сразу несколько связанных данных. Для записи (операций) он не применяется.
+- **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
+- Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
+- **Если есть сомнения — выбирайте Connect.**
+
+## REST 全廃・Connect 移行 (2026-11-06〜07)
+
+**状況**: 自前の API の操作 32 個(旧ルート 21 本)をすべて Connect に移し、旧 REST(`/api/...`)の経路は**削除した**(旧パスは 404)。ユーザー決定(2026-11-04)の「REST 全廃・gRPC / Connect へ」に従う。方針の正本は `aon-co-jp/runo` の `API-POLICY.md`。
+
+- **呼び方**: `POST /rs_blog.v1.<Service>/<Method>`、`content-type: application/json`、本文は JSON オブジェクト。認証は従来どおり `Authorization: Bearer <セッション>`。
+  パス引数・クエリだった値は、JSON の欄に入れる(例: `POST /rs_blog.v1.Posts/Get ほか` に `{"id": 3}`)。
+- **サービス**: Auth(RequestOtp, VerifyOtp, Logout, GetLoginMode, SetLoginMode, QrLogin*)・Posts・Categories・Pages・Tags・Comments
+- **読み込みは RS-JSON**(`rust_json::from_str_secure`: 本文 64 KiB・深さ16・重複キー拒否)、書き出しは `rust_json::fast`。
+- **エラー**: `{"code": "...", "message": "..."}`(HTTP: 400 不正入力・重複キー / 401 未認証 / 403 / 404 / 415 / 503 など)。成功は常に 200(文字列だけの応答は `{"message": "..."}`)。
+- **実装**: `src/connect.rs` が入口。JSON の欄を内部ルーター(公開されない)のパス引数・クエリ・本文へ変換して既存ハンドラを呼ぶ。`build_routes` の `rpc_table!` が唯一の表。
+- **残したもの(例外)**: `GET /`(案内ページ)・`GET /healthz`(ヘルスチェック)・`GET /qr-confirm.html`(QR 確認ページ、画面)。いずれも自前 API ではなく画面/運用用の GET。
+- **試験**: `cargo test` 27 件が通る(旧 REST が 404、認証なし 401、不正 JSON・重複キー・非オブジェクト 400、JSON 以外の content-type 415、パス引数欠落 400、GET 405 を含む)。
+- **呼び出し元**: 同リポジトリの画面(`/` の案内、`/qr-confirm.html` の JS)は Connect に更新済み。他リポジトリからの呼び出しは確認できなかった(文書内の言及のみ)。
+- **注意**: 旧 REST をそのまま叩いている外部のスクリプトがあれば壊れる(互換は残していない)。
+- **本番**: `rs-blog.service`(ポート 8101)への反映状況は下の PORTING.md を参照。
+
+
+## 再開用メッセージ / Resume message (2026-11-15, 別アカウントでの再開用 / for resuming on another account)
+
+### 日本語
+**到達点(完了・確認済み)**
+- REST 全廃は完了。自前 API の操作 32 個を Connect(`POST /rs_blog.v1.<Service>/<Method>`、JSON、`Authorization: Bearer`)へ移し、旧 `/api/...` は削除(404)。残したのは画面・運用用の `GET /`・`/healthz`・`/qr-confirm.html` のみ(例外0、台帳掲載なし)。
+- 実装は `src/connect.rs`(RS-JSON の `from_str_secure` で上限つき読み込み、エラーは `{"code","message"}`)と `src/main.rs` の `rpc_table!`(唯一のルート表)。`cargo test` 27 件成功。ブラウザで `/qr-confirm.html` が白画面にならないことを確認済み。
+- 本番(VPS `ssh conoha`、`rs-blog.service`、ポート8101): 2026-11-07 に WSL ビルド(glibc 2.34)で入れ替え済み、healthz 200・Connect 認証なし 401・旧パス 404 を確認。旧バイナリは `target/release/*.bak-20261107`。VPS の clone(`/root/RS-Blog`)は 2026-11-15 に `git fetch` + `git reset --hard origin/main` で整列済み(**`git pull` はしない**)。
+**未了・注意**
+- 11-07 以降に他セッションが依存更新(rand 0.10 / sha2 0.11)と ARM64 の CI を `main` へ追加した。**この版は本番へ未反映**(本番は 11-07 のビルド)。反映するなら WSL でリリースビルド → glibc 2.39 以下を確認 → scp → バックアップ → 入れ替え → 再起動 → 確認(`MSYS_NO_PATHCONV=1 wsl -d Ubuntu -- bash スクリプト`、VPS でビルドしない)。
+- 管理者 OTP+QR の通しは SMTP が無いとローカルで試せない(`cargo test` の全フロー試験のみで確認)。
+- 旧 REST を叩く外部スクリプトがあれば壊れる(互換は残していない)。
+- `F:\_restdeploy`(一時バイナリ置き場)は手で削除してよい。
+**貼り付け用メッセージ**
+> `aon-co-jp/RS-Blog` を新しく clone して再開してください(`git pull` ではなく新規 clone)。REST 全廃は完了済みで、API は `POST /rs_blog.v1.<Service>/<Method>`(JSON)です。この README・CLAUDE・PORTING の「REST 全廃・Connect 移行」節と本節を読み、(1) 最新の `main`(依存更新・ARM64 CI 込み)をビルドして `cargo test` を通す、(2) 問題なければ WSL でリリースビルドして VPS の `rs-blog.service`(ポート8101)へ反映、(3) 反映後に healthz 200・Connect 401・旧 `/api/...` 404 を確認、の順に進めてください。ルートを足すときは `rpc_table!` に1行足し、REST は作らないこと。共通方針は `aon-co-jp/runo` の `API-POLICY.md`。チャットは日本語のみ。
+
+### English
+**Where things stand (done and verified)**
+- REST is abolished. All 32 own operations moved to Connect (`POST /rs_blog.v1.<Service>/<Method>`, JSON, `Authorization: Bearer`); the old `/api/...` routes are removed (404). Only the UI/ops GETs `/`, `/healthz` and `/qr-confirm.html` remain (no ledger exceptions).
+- Implementation: `src/connect.rs` (RS-JSON `from_str_secure` with limits; errors are `{"code","message"}`) and the single route table `rpc_table!` in `src/main.rs`. `cargo test`: 27 passing. `/qr-confirm.html` was checked in a browser (no white screen).
+- Production (VPS `ssh conoha`, `rs-blog.service`, port 8101): swapped on 2026-11-07 using a WSL build (glibc 2.34); healthz 200, Connect without auth 401, old path 404 verified. Old binary kept as `target/release/*.bak-20261107`. The VPS clone (`/root/RS-Blog`) was aligned on 2026-11-15 with `git fetch` + `git reset --hard origin/main` (**never `git pull`**).
+**Open items / cautions**
+- After 11-07 other sessions pushed dependency updates (rand 0.10 / sha2 0.11) and an ARM64 CI job to `main`. **That build is not deployed** (production runs the 11-07 build). To deploy: WSL release build -> confirm glibc <= 2.39 -> scp -> back up -> swap -> restart -> verify (`MSYS_NO_PATHCONV=1 wsl -d Ubuntu -- bash script`; do not build on the VPS).
+- The admin OTP+QR flow cannot be run locally without SMTP (covered only by the `cargo test` full-flow tests).
+- Any external script still calling the old REST routes will break (no compatibility layer was kept).
+- `F:\_restdeploy` (temporary binaries) can be deleted by hand.
+**Paste-ready message**
+> Resume `aon-co-jp/RS-Blog` from a fresh clone (not `git pull`). REST abolition is done; the API is `POST /rs_blog.v1.<Service>/<Method>` (JSON). Read the "REST abolition / Connect migration" sections and this section in README / CLAUDE / PORTING, then: (1) build the latest `main` (with the dependency updates and ARM64 CI) and get `cargo test` green, (2) if fine, release-build in WSL and deploy to the VPS `rs-blog.service` (port 8101), (3) verify healthz 200, Connect 401 without auth, old `/api/...` 404. To add a route, add one line to `rpc_table!`; never add REST. Shared policy: `API-POLICY.md` in `aon-co-jp/runo`. Chat in Japanese only.
+
+## REST abolition / Connect migration (English summary, 2026-11-06..07)
+- All own APIs (32 operations) are Connect unary calls: `POST /rs_blog.v1.<Service>/<Method>`, `content-type: application/json`, JSON object body (path/query values go into JSON fields), `Authorization: Bearer <session>`.
+- JSON in with RS-JSON `from_str_secure` (64 KiB, depth 16, duplicate keys rejected), JSON out with `rust_json::fast`; errors `{"code","message"}`; success is always HTTP 200.
+- Old `/api/...` REST routes were deleted; kept as exceptions: `GET /`, `GET /healthz`, `GET /qr-confirm.html` (UI/ops).
+- Tests: 27 passing, including old-REST-404, 401 without auth, 400 for bad/duplicate-key JSON, 415 for non-JSON content-type, 405 for GET.
+
+## 2026-11-16 Connect 移行後の追加確認(別セッション)
+- 手元でビルドした実サーバー(一時データ領域、SMTPなし)に `curl` で全ルートを実測: 認証が要る操作は 401、本文不備・重複キーは 400、旧 `/api/...`・`/admin/...` は 404。`GET /qr-confirm.html` はブラウザで白画面にならず(無効な id では「無効または期限切れ」を表示、コンソールの 404 はその確認呼び出し)。
+- ログイン後の正常系(Orders/Checkout、Categories、Pages、Tags、Comments、QRログイン、`otp_qr` の第二要素)は `cargo test`(実ハンドラ+本番と同じルート表 `build_routes`)で通る。RS-Blog は 27 件成功(Pages・Tags・Comments の承認待ち、QR のみ・`otp_qr` を含む)。
+- **未確認**: 本番でのログイン後の呼び出し。OTP は管理者メールにだけ届き、`otp_qr` ではさらにスマホ側の QR 確認(本人操作)が要るため、本番では実施していない。実施するには管理者がメールの OTP を提供し、`otp_qr` の場合は端末で `/qr-confirm.html` を開く必要がある。
+
+## 2026-11-17 再開用メモ / Resume memo
+- 日本語: RustSec依存更新(h2/rustls/webpki/tokio)と本番ログイン後の通し確認を2026-11-08に完了。詳細・再開用メッセージは [`PORTING.md`](PORTING.md) 末尾。
+- English: RustSec dependency updates (h2/rustls/webpki/tokio) and an authenticated production check were completed on 2026-11-08. Details and the resume message are at the end of [`PORTING.md`](PORTING.md).
