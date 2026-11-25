@@ -1183,6 +1183,8 @@ macro_rules! rpc_table {
 
 /// Connect のパッケージ名(`POST /rs_blog.v1.<Service>/<Method>`)。
 pub const PACKAGE: &str = "rs_blog.v1";
+/// 版なしの別名(Versionless)。
+pub const PACKAGE_ALIAS: &str = "rs_blog";
 
 /// ルーティング定義を`main()`とテストの両方から再利用できるように切り出したもの。
 /// 公開するのは `/`・`/healthz`・`/qr-confirm.html`(規格どおりの GET)と Connect の `POST /rs_blog.v1.<Service>/<Method>` だけ。
@@ -1230,6 +1232,9 @@ fn build_routes(state: AppState) -> impl poem::Endpoint {
     for d in defs {
         let call = connect::Call { inner: inner.clone(), def: d, package: PACKAGE };
         app = app.at(format!("/{}.{}/{}", PACKAGE, d.service, d.method), post(call));
+        // Versionless: 版なしの別名(`/rs_blog.<Service>/<Method>`)でも同じ呼び出しができる。`.v1` は互換のため当面残す。
+        let alias = connect::Call { inner: inner.clone(), def: d, package: PACKAGE };
+        app = app.at(format!("/{}.{}/{}", PACKAGE_ALIAS, d.service, d.method), post(alias));
     }
     app.with(Tracing)
 }
@@ -1729,6 +1734,20 @@ mod tests {
     }
 
     // ---- Connect 入口の試験(REST全廃: 旧 /api/... は 404、認証なし401・不正入力400・重複キー400・正常200) ----
+
+    /// Versionless: 版なしの名前でも版つきと同じ結果になる(未知のメソッドは404)。
+    #[tokio::test]
+    async fn versionless_alias_is_routed_like_v1() {
+        let dir = tempdir();
+        let state = test_state(dir.path());
+        let client = TestClient::new(app_for(state));
+        let a = client.post("/rs_blog.v1.Posts/Create").body_json(&serde_json::json!({})).send().await;
+        let b = client.post("/rs_blog.Posts/Create").body_json(&serde_json::json!({})).send().await;
+        assert_eq!(a.0.status(), b.0.status(), "版なしの別名は版つきと同じ状態を返す");
+        assert_ne!(b.0.status(), poem::http::StatusCode::NOT_FOUND);
+        let c = client.post("/rs_blog.NoSuch/Nope").body_json(&serde_json::json!({})).send().await;
+        c.assert_status(poem::http::StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
     async fn legacy_rest_routes_are_gone_and_connect_errors_have_code_and_message() {
